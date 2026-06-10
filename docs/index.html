@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>soundworm — The Ultimate Audio Router</title>
+  <meta name="description" content="Rules-driven audio routing for Linux, macOS, and Windows. Sub-100ms reaction, Rhai scripting, session save/restore. Written in Rust.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg:          #09090B;
+      --bg2:         #111113;
+      --bg3:         #18181B;
+      --card:        #1C1C1F;
+      --card-hover:  #232326;
+      --border:      #27272A;
+      --border-h:    #3F3F46;
+      --cyan:        #22D3EE;
+      --cyan-dim:    rgba(34,211,238,0.12);
+      --cyan-glow:   rgba(34,211,238,0.28);
+      --teal:        #2DD4BF;
+      --blue:        #60A5FA;
+      --violet:      #A78BFA;
+      --amber:       #FBBF24;
+      --rose:        #FB7185;
+      --tx1:         #FAFAFA;
+      --tx2:         #A1A1AA;
+      --tx3:         #71717A;
+      --tx4:         #52525B;
+    }
+    *{margin:0;padding:0;box-sizing:border-box}
+    html{scroll-behavior:smooth}
+    body{font-family:'Inter',-apple-system,BlinkMacSystemFont,sans-serif;background:var(--bg);color:var(--tx2);line-height:1.65;-webkit-font-smoothing:antialiased}
+
+    /* ── NAV ── */
+    nav{position:fixed;top:0;left:0;right:0;z-index:1000;background:rgba(9,9,11,0.82);backdrop-filter:blur(20px);border-bottom:1px solid var(--border)}
+    .nav-inner{max-width:1280px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;padding:0 32px;height:64px}
+    .nav-logo{display:flex;align-items:center;gap:10px;text-decoration:none;color:var(--tx1);font-weight:700;font-size:1.1rem;letter-spacing:-.02em}
+    .nav-logo svg{width:26px;height:26px;flex-shrink:0}
+    .nav-links{display:flex;align-items:center;gap:4px;list-style:none}
+    .nav-links a{color:var(--tx2);text-decoration:none;font-size:.875rem;font-weight:500;padding:8px 13px;border-radius:8px;transition:all .15s}
+    .nav-links a:hover{color:var(--tx1);background:var(--bg3)}
+    .nav-gh{border:1px solid var(--border);color:var(--tx1)!important}
+    .nav-gh:hover{border-color:var(--border-h)!important;background:var(--bg3)!important}
+    .nav-crates{background:linear-gradient(135deg,#0891b2,#22d3ee)!important;color:#000!important;font-weight:600!important}
+    .nav-crates:hover{opacity:.9}
+    .hamburger{display:none;background:none;border:none;color:var(--tx1);font-size:1.4rem;cursor:pointer;padding:4px}
+    @media(max-width:768px){.nav-links{display:none;flex-direction:column;gap:4px;padding:12px;position:absolute;top:64px;left:0;right:0;background:var(--bg2);border-bottom:1px solid var(--border)}.nav-links.open{display:flex}.hamburger{display:block}}
+
+    /* ── HERO ── */
+    .hero{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:100px 24px 80px;position:relative;overflow:hidden}
+    .hero::before{content:'';position:absolute;inset:0;background:radial-gradient(ellipse 80% 50% at 50% 0%,rgba(34,211,238,.08) 0%,transparent 70%);pointer-events:none}
+    .hero-badge{display:inline-flex;align-items:center;gap:8px;background:var(--cyan-dim);border:1px solid rgba(34,211,238,.25);color:var(--cyan);font-size:.78rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding:6px 14px;border-radius:99px;margin-bottom:28px}
+    .hero h1{font-size:clamp(2.8rem,7vw,5.5rem);font-weight:900;color:var(--tx1);letter-spacing:-.04em;line-height:1.05;max-width:900px}
+    .hero h1 span{background:linear-gradient(135deg,var(--cyan),var(--teal));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+    .hero p{margin-top:22px;font-size:1.15rem;color:var(--tx2);max-width:640px;line-height:1.7}
+    .hero-btns{display:flex;gap:12px;margin-top:40px;flex-wrap:wrap;justify-content:center}
+    .btn-primary{background:linear-gradient(135deg,#0891b2,#22d3ee);color:#000;font-weight:700;font-size:.95rem;padding:14px 28px;border-radius:10px;text-decoration:none;transition:opacity .15s}
+    .btn-primary:hover{opacity:.88}
+    .btn-secondary{background:transparent;color:var(--tx1);font-weight:600;font-size:.95rem;padding:13px 27px;border:1px solid var(--border-h);border-radius:10px;text-decoration:none;transition:all .15s}
+    .btn-secondary:hover{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-dim)}
+    .hero-stats{display:flex;gap:40px;margin-top:60px;flex-wrap:wrap;justify-content:center}
+    .stat{text-align:center}
+    .stat-n{font-size:2rem;font-weight:800;color:var(--tx1);letter-spacing:-.03em}
+    .stat-n span{color:var(--cyan)}
+    .stat-l{font-size:.8rem;color:var(--tx3);margin-top:2px}
+
+    /* ── TERMINAL ── */
+    .terminal-wrap{width:100%;max-width:820px;margin:64px auto 0;text-align:left}
+    .terminal{background:#0D1117;border:1px solid var(--border);border-radius:12px;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.6),0 0 0 1px rgba(34,211,238,.06)}
+    .term-bar{background:#161B22;display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border)}
+    .dot{width:12px;height:12px;border-radius:50%}
+    .dot-r{background:#FF5F56}.dot-y{background:#FFBD2E}.dot-g{background:#27C93F}
+    .term-title{font-family:'JetBrains Mono',monospace;font-size:.78rem;color:var(--tx3);margin-left:6px}
+    .term-body{padding:20px 24px;font-family:'JetBrains Mono',monospace;font-size:.83rem;line-height:1.85}
+    .p{color:var(--tx3)}.cmd{color:var(--tx1)}.out{color:var(--tx2)}
+    .c-cyan{color:var(--cyan)}.c-teal{color:var(--teal)}.c-green{color:#4ADE80}
+    .c-amber{color:var(--amber)}.c-violet{color:var(--violet)}.c-rose{color:var(--rose)}
+    .c-dim{color:var(--tx4)}
+
+    /* ── SECTIONS ── */
+    section{padding:96px 24px}
+    .container{max-width:1280px;margin:0 auto}
+    .section-label{display:inline-block;font-size:.78rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--cyan);margin-bottom:14px}
+    .section-title{font-size:clamp(1.9rem,4vw,2.9rem);font-weight:800;color:var(--tx1);letter-spacing:-.03em;line-height:1.15;margin-bottom:18px}
+    .section-sub{font-size:1.05rem;color:var(--tx2);max-width:600px;line-height:1.7}
+
+    /* ── FEATURES GRID ── */
+    .features-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:1px;background:var(--border);border:1px solid var(--border);border-radius:16px;overflow:hidden;margin-top:56px}
+    .feat{background:var(--bg2);padding:32px;transition:background .2s}
+    .feat:hover{background:var(--card-hover)}
+    .feat-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;margin-bottom:18px;font-size:1.3rem}
+    .feat h3{font-size:1.05rem;font-weight:700;color:var(--tx1);margin-bottom:8px}
+    .feat p{font-size:.9rem;line-height:1.65}
+    .bg-cyan{background:var(--cyan-dim);border:1px solid rgba(34,211,238,.2)}
+    .bg-blue{background:rgba(96,165,250,.1);border:1px solid rgba(96,165,250,.2)}
+    .bg-violet{background:rgba(167,139,250,.1);border:1px solid rgba(167,139,250,.2)}
+    .bg-teal{background:rgba(45,212,191,.1);border:1px solid rgba(45,212,191,.2)}
+    .bg-amber{background:rgba(251,191,36,.1);border:1px solid rgba(251,191,36,.2)}
+    .bg-rose{background:rgba(251,113,133,.1);border:1px solid rgba(251,113,133,.2)}
+
+    /* ── ARCH ── */
+    .arch-wrap{margin-top:56px;background:var(--bg2);border:1px solid var(--border);border-radius:16px;padding:40px;overflow-x:auto}
+    .arch-box{display:flex;flex-direction:column;align-items:center;gap:8px;min-width:560px}
+    .arch-row{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+    .arch-pill{background:var(--bg3);border:1px solid var(--border-h);border-radius:8px;padding:10px 22px;font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--tx1);font-weight:500;white-space:nowrap}
+    .arch-pill.hi{border-color:var(--cyan);color:var(--cyan);background:var(--cyan-dim)}
+    .arch-pill.hi2{border-color:var(--teal);color:var(--teal);background:rgba(45,212,191,.1)}
+    .arch-pill.hi3{border-color:var(--violet);color:var(--violet);background:rgba(167,139,250,.1)}
+    .arch-arrow{color:var(--tx4);font-size:.9rem;letter-spacing:.1em}
+
+    /* ── CODE TABS ── */
+    .code-section{background:var(--bg2)}
+    .tabs{display:flex;gap:0;border-bottom:1px solid var(--border);margin-bottom:0;flex-wrap:wrap}
+    .tab{padding:12px 20px;font-size:.85rem;font-weight:600;color:var(--tx3);cursor:pointer;border-bottom:2px solid transparent;transition:all .15s;user-select:none}
+    .tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+    .tab:hover:not(.active){color:var(--tx1)}
+    .code-pane{display:none}
+    .code-pane.active{display:block}
+    .code-block{background:#0D1117;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-top:0}
+    .code-bar{background:#161B22;display:flex;align-items:center;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--border)}
+    .code-lang{font-family:'JetBrains Mono',monospace;font-size:.75rem;color:var(--tx3)}
+    .code-body{padding:24px;font-family:'JetBrains Mono',monospace;font-size:.83rem;line-height:1.85;overflow-x:auto;white-space:pre}
+    .kw{color:#FF79C6}.fn{color:#50FA7B}.str{color:#F1FA8C}.cmt{color:#6272A4}.num{color:#BD93F9}
+    .ty{color:var(--cyan)}.var{color:#FFB86C}.bracket{color:var(--teal)}
+    .code-tabs-wrap{border:1px solid var(--border);border-radius:16px;overflow:hidden}
+    .code-tabs-wrap .tabs{background:var(--bg3);padding:0 16px}
+
+    /* ── CLI REF ── */
+    .cli-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:16px;margin-top:40px}
+    .cli-card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 24px}
+    .cli-cmd{font-family:'JetBrains Mono',monospace;font-size:.85rem;color:var(--cyan);font-weight:500;margin-bottom:8px}
+    .cli-desc{font-size:.875rem;color:var(--tx2)}
+
+    /* ── INSTALL ── */
+    .install-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:16px;margin-top:40px}
+    .install-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .install-head{background:var(--bg3);padding:14px 20px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--border)}
+    .install-head span{font-weight:600;color:var(--tx1);font-size:.9rem}
+    .install-body{padding:20px;font-family:'JetBrains Mono',monospace;font-size:.8rem;line-height:1.9;color:var(--tx2)}
+
+    /* ── PLATFORM TABLE ── */
+    .platform-table{width:100%;border-collapse:collapse;margin-top:40px}
+    .platform-table th{text-align:left;padding:12px 16px;font-size:.8rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--tx3);border-bottom:1px solid var(--border);background:var(--bg3)}
+    .platform-table td{padding:14px 16px;font-size:.875rem;border-bottom:1px solid var(--border);background:var(--card)}
+    .platform-table tr:last-child td{border-bottom:none}
+    .platform-table td:first-child{font-family:'JetBrains Mono',monospace;color:var(--tx1)}
+    .badge{display:inline-flex;align-items:center;gap:5px;font-size:.75rem;font-weight:600;padding:3px 10px;border-radius:99px}
+    .badge-green{background:rgba(74,222,128,.1);color:#4ADE80;border:1px solid rgba(74,222,128,.25)}
+    .badge-amber{background:rgba(251,191,36,.1);color:var(--amber);border:1px solid rgba(251,191,36,.25)}
+    .badge-blue{background:rgba(96,165,250,.1);color:var(--blue);border:1px solid rgba(96,165,250,.25)}
+
+    /* ── FOOTER ── */
+    footer{border-top:1px solid var(--border);padding:48px 24px;text-align:center}
+    .footer-inner{max-width:1280px;margin:0 auto}
+    .footer-logo{display:flex;align-items:center;justify-content:center;gap:10px;margin-bottom:20px;color:var(--tx1);font-weight:700;font-size:1rem}
+    .footer-links{display:flex;justify-content:center;gap:24px;flex-wrap:wrap;margin-bottom:20px}
+    .footer-links a{color:var(--tx3);text-decoration:none;font-size:.875rem;transition:color .15s}
+    .footer-links a:hover{color:var(--tx1)}
+    .footer-copy{font-size:.8rem;color:var(--tx4)}
+
+    /* ── DIVIDER ── */
+    .divider{height:1px;background:var(--border);max-width:1280px;margin:0 auto}
+  </style>
+</head>
+<body>
+
+<!-- ── NAV ── -->
+<nav>
+  <div class="nav-inner">
+    <a class="nav-logo" href="#">
+      <svg viewBox="0 0 26 26" fill="none">
+        <path d="M3 13 Q6 6 9 13 Q12 20 15 13 Q18 6 21 13 Q23 17 25 13" stroke="#22D3EE" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="13" cy="13" r="2.5" fill="#22D3EE" opacity=".35"/>
+      </svg>
+      soundworm
+    </a>
+    <button class="hamburger" onclick="document.querySelector('.nav-links').classList.toggle('open')" aria-label="menu">☰</button>
+    <ul class="nav-links">
+      <li><a href="#features">Features</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#routing">Routing</a></li>
+      <li><a href="#install">Install</a></li>
+      <li><a href="#cli">CLI</a></li>
+      <li><a href="https://github.com/GrokImageCompression/soundworm" class="nav-gh">GitHub</a></li>
+      <li><a href="https://crates.io/crates/soundworm-core" class="nav-crates">crates.io</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ── HERO ── -->
+<section class="hero">
+  <div class="hero-badge">
+    <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#22D3EE" stroke-width="1.5"/><path d="M4 6l1.5 1.5L8 4" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    v1.0 stable — MIT / Apache-2.0
+  </div>
+  <h1>The <span>ultimate</span><br>audio router</h1>
+  <p>Rules-driven audio routing for Linux, macOS, and Windows. Sub-100 ms reaction time, Rhai scripting, session snapshots, and full observability. Written in Rust.</p>
+  <div class="hero-btns">
+    <a class="btn-primary" href="#install">Get started</a>
+    <a class="btn-secondary" href="https://github.com/GrokImageCompression/soundworm">View on GitHub →</a>
+  </div>
+  <div class="hero-stats">
+    <div class="stat"><div class="stat-n">&lt;<span>100</span>ms</div><div class="stat-l">reaction time</div></div>
+    <div class="stat"><div class="stat-n"><span>3</span></div><div class="stat-l">platforms</div></div>
+    <div class="stat"><div class="stat-n"><span>0</span></div><div class="stat-l">runtime deps</div></div>
+    <div class="stat"><div class="stat-n"><span>∞</span></div><div class="stat-l">routing rules</div></div>
+  </div>
+
+  <!-- terminal demo -->
+  <div class="terminal-wrap">
+    <div class="terminal">
+      <div class="term-bar">
+        <div class="dot dot-r"></div><div class="dot dot-y"></div><div class="dot dot-g"></div>
+        <span class="term-title">sw — soundworm CLI</span>
+      </div>
+      <div class="term-body">
+<span class="p">$ </span><span class="cmd">sw list</span>
+<span class="out">┌────┬──────────────────────────────┬────────────┬──────────────────────────┬────────┐
+│ ID │ Name                         │ App        │ Media Class              │ Kind   │
+╞════╪══════════════════════════════╪════════════╪══════════════════════════╪════════╡
+│ <span class="c-cyan">12</span> │ alsa_output.pci-0000_00_1f.3 │            │ Audio/Sink               │ Sink   │
+│ <span class="c-cyan">14</span> │ alsa_input.usb_blue_yeti     │            │ Audio/Source             │ Source │
+│ <span class="c-cyan">28</span> │ Spotify                      │ spotify    │ Stream/Output/Audio      │ Source │
+│ <span class="c-cyan">31</span> │ ZOOM VoiceEngine             │ zoom       │ Stream/Input/Audio       │ Sink   │
+│ <span class="c-cyan">35</span> │ Firefox                      │ firefox    │ Stream/Output/Audio      │ Source │
+└────┴──────────────────────────────┴────────────┴──────────────────────────┴────────┘</span>
+
+<span class="p">$ </span><span class="cmd">sw link Spotify alsa_output.pci-0000_00_1f.3</span>
+<span class="c-green">✓</span> <span class="out">Linked 'Spotify' → 'alsa_output.pci-0000_00_1f.3'  (port 29 → 13)</span>
+
+<span class="p">$ </span><span class="cmd">sw snapshot save work-from-home</span>
+<span class="c-green">✓</span> <span class="out">Saved snapshot 'work-from-home'</span>
+
+<span class="p">$ </span><span class="cmd">sw metrics</span>
+<span class="out">Node 28  latency=<span class="c-amber">4.2</span>ms  cpu=<span class="c-amber">0.3</span>%  xruns=<span class="c-green">0</span>
+Node 14  latency=<span class="c-amber">2.1</span>ms  cpu=<span class="c-amber">0.1</span>%  xruns=<span class="c-green">0</span></span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FEATURES ── -->
+<section id="features">
+  <div class="container">
+    <span class="section-label">Features</span>
+    <h2 class="section-title">Everything you need.<br>Nothing you don't.</h2>
+    <p class="section-sub">soundworm is library-first. The daemon and CLI are thin wrappers over a clean Rust API you can embed in anything.</p>
+    <div class="features-grid">
+
+      <div class="feat">
+        <div class="feat-icon bg-cyan">🔀</div>
+        <h3>Rules-driven routing</h3>
+        <p>Declare routing rules in TOML. When a node appears, soundworm matches it against your rules and wires it instantly — no manual intervention needed.</p>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon bg-violet">📜</div>
+        <h3>Rhai scripting</h3>
+        <p>When TOML isn't expressive enough, drop into a Rhai script. Full access to node metadata, hot-reload on save, and a 50 ms execution budget to keep things honest.</p>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon bg-teal">⚡</div>
+        <h3>Sub-100 ms reaction</h3>
+        <p>The PipeWire event loop runs in a dedicated thread. From the moment a node appears on the graph to the moment it is routed: guaranteed under 100 ms.</p>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon bg-blue">💾</div>
+        <h3>Session snapshots</h3>
+        <p>Capture your entire routing session with <code style="font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--cyan)">sw snapshot save</code>. Restore it later with a single command — even after a reboot.</p>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon bg-amber">📊</div>
+        <h3>Built-in observability</h3>
+        <p>Per-node latency histograms and xrun counters, exposed via <code style="font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--amber)">sw metrics</code> or an optional Prometheus exporter. Know when something glitches before your ears do.</p>
+      </div>
+
+      <div class="feat">
+        <div class="feat-icon bg-rose">🦀</div>
+        <h3>Pure Rust, semver-stable</h3>
+        <p>Zero unsafe code in the public API. Semver guarantees on <code style="font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--rose)">soundworm-core</code>, <code style="font-family:'JetBrains Mono',monospace;font-size:.85em;color:var(--rose)">soundworm-graph</code>, and the IPC protocol from v1.0 onward.</p>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── PLATFORM TABLE ── -->
+<section>
+  <div class="container">
+    <span class="section-label">Platforms</span>
+    <h2 class="section-title">Three platforms.<br>One API.</h2>
+    <p class="section-sub">The <code style="font-family:'JetBrains Mono',monospace;font-size:.9em;color:var(--cyan)">AudioBackend</code> trait abstracts over platform audio systems. Swap backends without touching your rules or scripts.</p>
+    <table class="platform-table">
+      <thead>
+        <tr><th>Platform</th><th>Backend</th><th>Enumerate</th><th>Link / Unlink</th><th>Events</th><th>Metrics</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Linux</td>
+          <td>PipeWire</td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+        </tr>
+        <tr>
+          <td>macOS</td>
+          <td>CoreAudio</td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-amber">⚠ app-level</span></td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-blue">~ partial</span></td>
+        </tr>
+        <tr>
+          <td>Windows</td>
+          <td>WASAPI</td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-amber">⚠ session-level</span></td>
+          <td><span class="badge badge-green">✓ stable</span></td>
+          <td><span class="badge badge-blue">~ partial</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── ARCHITECTURE ── -->
+<section id="architecture">
+  <div class="container">
+    <span class="section-label">Architecture</span>
+    <h2 class="section-title">Library-first design.</h2>
+    <p class="section-sub">The daemon and CLI are thin wrappers. Every capability is reachable through the library crates — embed soundworm directly into your own application.</p>
+    <div class="arch-wrap">
+      <div class="arch-box">
+        <div class="arch-row">
+          <div class="arch-pill hi">CLI (sw)</div>
+          <div class="arch-pill hi">Daemon (swd)</div>
+          <div class="arch-pill hi">Your App</div>
+        </div>
+        <div class="arch-arrow">│ Unix socket (JSON-RPC)  /  direct library call │</div>
+        <div class="arch-row">
+          <div class="arch-pill hi2">soundworm-graph</div>
+          <div class="arch-pill hi2">soundworm-policy</div>
+          <div class="arch-pill hi2">soundworm-observability</div>
+        </div>
+        <div class="arch-arrow">│ AudioBackend trait │</div>
+        <div class="arch-row">
+          <div class="arch-pill">pipewire-backend</div>
+          <div class="arch-pill">coreaudio-backend</div>
+          <div class="arch-pill">wasapi-backend</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── ROUTING / CODE TABS ── -->
+<section id="routing" class="code-section">
+  <div class="container">
+    <span class="section-label">Routing</span>
+    <h2 class="section-title">Declare once.<br>Route forever.</h2>
+    <p class="section-sub">Start with TOML rules. Graduate to Rhai when you need conditionals, loops, or external lookups — without restarting the daemon.</p>
+
+    <div style="margin-top:40px;" class="code-tabs-wrap">
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab(event,'toml')">TOML rules</div>
+        <div class="tab" onclick="switchTab(event,'rhai')">Rhai script</div>
+        <div class="tab" onclick="switchTab(event,'rust')">Rust API</div>
+      </div>
+
+      <div id="pane-toml" class="code-pane active">
+        <div class="code-block" style="border:none;border-radius:0">
+          <div class="code-bar"><span class="code-lang">~/.config/soundworm/rules/default.toml</span></div>
+          <div class="code-body"><span class="cmt"># Higher priority wins when multiple rules match.</span>
+
+<span class="bracket">[[</span><span class="ty">rules</span><span class="bracket">]]</span>
+<span class="var">name</span>     = <span class="str">"spotify-to-speakers"</span>
+<span class="var">priority</span> = <span class="num">10</span>
+<span class="bracket">[</span><span class="ty">rules.matches</span><span class="bracket">]</span>
+<span class="var">node_name</span> = <span class="str">"Spotify"</span>
+<span class="bracket">[</span><span class="ty">rules.action</span><span class="bracket">]</span>
+<span class="ty">Route</span> = <span class="bracket">{</span> <span class="var">target</span> = <span class="str">"alsa_output.pci-0000_00_1f.3"</span> <span class="bracket">}</span>
+
+<span class="bracket">[[</span><span class="ty">rules</span><span class="bracket">]]</span>
+<span class="var">name</span>     = <span class="str">"zoom-usb-headset"</span>
+<span class="var">priority</span> = <span class="num">20</span>
+<span class="bracket">[</span><span class="ty">rules.matches</span><span class="bracket">]</span>
+<span class="var">node_name</span> = <span class="str">"ZOOM VoiceEngine"</span>
+<span class="bracket">[</span><span class="ty">rules.action</span><span class="bracket">]</span>
+<span class="ty">Route</span> = <span class="bracket">{</span> <span class="var">target</span> = <span class="str">"alsa_input.usb_blue_yeti"</span> <span class="bracket">}</span>
+
+<span class="bracket">[[</span><span class="ty">rules</span><span class="bracket">]]</span>
+<span class="var">name</span>     = <span class="str">"block-obs-loopback"</span>
+<span class="var">priority</span> = <span class="num">99</span>
+<span class="bracket">[</span><span class="ty">rules.matches</span><span class="bracket">]</span>
+<span class="var">node_name</span> = <span class="str">"OBS Audio Monitor"</span>
+<span class="bracket">[</span><span class="ty">rules.action</span><span class="bracket">]</span>
+<span class="ty">Deny</span> = <span class="bracket">{}</span></div>
+        </div>
+      </div>
+
+      <div id="pane-rhai" class="code-pane">
+        <div class="code-block" style="border:none;border-radius:0">
+          <div class="code-bar"><span class="code-lang">~/.config/soundworm/scripts/routing.rhai</span></div>
+          <div class="code-body"><span class="cmt">// Called for every new node. `node_name`, `app_name`, `media_class` are in scope.</span>
+<span class="cmt">// Hot-reloads within 1 s of saving. Previous script stays active on parse error.</span>
+
+<span class="kw">let</span> <span class="var">music_apps</span> = [<span class="str">"Spotify"</span>, <span class="str">"vlc"</span>, <span class="str">"mpv"</span>, <span class="str">"Rhythmbox"</span>];
+<span class="kw">let</span> <span class="var">comms_apps</span> = [<span class="str">"ZOOM VoiceEngine"</span>, <span class="str">"Microsoft Teams"</span>, <span class="str">"Signal Desktop"</span>];
+
+<span class="kw">if</span> <span class="var">music_apps</span>.contains(node_name) {
+    log_route(node_name, <span class="str">"speakers"</span>);
+    <span class="fn">allow</span>()
+} <span class="kw">else if</span> <span class="var">comms_apps</span>.contains(node_name) {
+    log_route(node_name, <span class="str">"usb_headset"</span>);
+    <span class="fn">allow</span>()
+} <span class="kw">else if</span> media_class == <span class="str">"Stream/Output/Audio"</span> {
+    <span class="cmt">// Unknown stream: route to default sink, log it</span>
+    log_route(node_name, <span class="str">"default"</span>);
+    <span class="fn">allow</span>()
+} <span class="kw">else</span> {
+    <span class="fn">deny</span>()
+}</div>
+        </div>
+      </div>
+
+      <div id="pane-rust" class="code-pane">
+        <div class="code-block" style="border:none;border-radius:0">
+          <div class="code-bar"><span class="code-lang">src/main.rs</span></div>
+          <div class="code-body"><span class="kw">use</span> soundworm_core::backend::<span class="ty">AudioBackend</span>;
+<span class="kw">use</span> soundworm_graph::<span class="ty">AudioGraph</span>;
+<span class="kw">use</span> soundworm_pipewire::<span class="ty">PipeWireBackend</span>;
+
+<span class="kw">let</span> <span class="var">backend</span> = <span class="ty">PipeWireBackend</span>::<span class="fn">new</span>()?;
+
+<span class="cmt">// Subscribe to live graph events</span>
+<span class="kw">let</span> <span class="var">rx</span> = backend.<span class="fn">subscribe</span>();
+<span class="kw">let mut</span> <span class="var">graph</span> = <span class="ty">AudioGraph</span>::<span class="fn">new</span>();
+
+<span class="fn">std::thread::spawn</span>(<span class="kw">move</span> || {
+    <span class="kw">while let</span> <span class="ty">Ok</span>(event) = rx.<span class="fn">recv</span>() {
+        graph.<span class="fn">apply_event</span>(event);
+    }
+});
+
+<span class="cmt">// Manual link by node name</span>
+<span class="kw">let</span> <span class="var">nodes</span> = backend.<span class="fn">enumerate_nodes</span>().<span class="kw">await</span>?;
+<span class="cmt">// ... find ports, create link ...</span>
+backend.<span class="fn">create_link</span>(&amp;link).<span class="kw">await</span>?;</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── INSTALL ── -->
+<section id="install">
+  <div class="container">
+    <span class="section-label">Install</span>
+    <h2 class="section-title">Up in under a minute.</h2>
+    <p class="section-sub">Install from crates.io or your distro's package manager. The systemd user service starts automatically on login.</p>
+
+    <div class="install-grid">
+      <div class="install-card">
+        <div class="install-head">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="#22D3EE" stroke-width="1.5"/><path d="M5 9l3 3 5-5" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Fedora / RPM (COPR)</span>
+        </div>
+        <div class="install-body"><span style="color:var(--cyan)">sudo</span> dnf copr enable grokimagecompression/soundworm
+<span style="color:var(--cyan)">sudo</span> dnf install soundworm
+systemctl --user enable --now soundworm</div>
+      </div>
+
+      <div class="install-card">
+        <div class="install-head">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="#22D3EE" stroke-width="1.5"/><path d="M5 9l3 3 5-5" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Arch Linux (AUR)</span>
+        </div>
+        <div class="install-body">yay -S soundworm
+<span style="color:var(--tx4)"># or</span>
+paru -S soundworm</div>
+      </div>
+
+      <div class="install-card">
+        <div class="install-head">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="#22D3EE" stroke-width="1.5"/><path d="M5 9l3 3 5-5" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>macOS (Homebrew)</span>
+        </div>
+        <div class="install-body">brew tap grokimagecompression/soundworm
+brew install soundworm
+brew services start soundworm</div>
+      </div>
+
+      <div class="install-card">
+        <div class="install-head">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="8" stroke="#22D3EE" stroke-width="1.5"/><path d="M5 9l3 3 5-5" stroke="#22D3EE" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>cargo (all platforms)</span>
+        </div>
+        <div class="install-body">cargo install soundworm-cli soundworm-daemon
+<span style="color:var(--tx4)"># start the daemon</span>
+swd &amp;
+<span style="color:var(--tx4)"># verify</span>
+sw list</div>
+      </div>
+    </div>
+
+    <div style="margin-top:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 24px">
+      <div style="font-size:.8rem;font-weight:600;color:var(--tx3);margin-bottom:10px;letter-spacing:.06em;text-transform:uppercase">systemd user service (Linux)</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;color:var(--tx2);line-height:1.85">mkdir -p ~/.config/systemd/user
+cp $(cargo locate-project --workspace --message-format plain | xargs dirname)/contrib/systemd/soundworm.service ~/.config/systemd/user/
+systemctl --user enable --now soundworm
+systemctl --user status soundworm</div>
+    </div>
+
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── CLI REFERENCE ── -->
+<section id="cli">
+  <div class="container">
+    <span class="section-label">CLI Reference</span>
+    <h2 class="section-title">sw — the soundworm CLI</h2>
+    <p class="section-sub">Every command works in-process when the daemon is down. Read-only commands (list, metrics) never need a running daemon.</p>
+    <div class="cli-grid">
+      <div class="cli-card">
+        <div class="cli-cmd">sw list</div>
+        <div class="cli-desc">List all audio nodes in a formatted table with ID, name, app, media class, and kind.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw link &lt;src-node&gt; &lt;sink-node&gt;</div>
+        <div class="cli-desc">Create a route between two nodes by name. Finds a matching output/input port pair automatically.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw unlink &lt;link-id&gt;</div>
+        <div class="cli-desc">Remove a route by its link ID (shown in <code style="font-family:'JetBrains Mono',monospace">sw list</code> after linking).</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw snapshot save &lt;name&gt;</div>
+        <div class="cli-desc">Capture the current routing session to <code style="font-family:'JetBrains Mono',monospace">$XDG_DATA_HOME/soundworm/snapshots/&lt;name&gt;.json</code>.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw snapshot load &lt;name&gt;</div>
+        <div class="cli-desc">Restore a previously saved session, diffing against the current graph and applying only what changed.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw snapshot list</div>
+        <div class="cli-desc">List all saved snapshots by name.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw metrics</div>
+        <div class="cli-desc">Dump per-node latency histograms and xrun counters as a formatted table. Add <code style="font-family:'JetBrains Mono',monospace">--json</code> for machine-readable output.</div>
+      </div>
+      <div class="cli-card">
+        <div class="cli-cmd">sw metrics --watch</div>
+        <div class="cli-desc">Stream live metrics updates to the terminal, refreshing every second.</div>
+      </div>
+    </div>
+
+    <div style="margin-top:24px;background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px 24px">
+      <div style="font-size:.8rem;font-weight:600;color:var(--tx3);margin-bottom:10px;letter-spacing:.06em;text-transform:uppercase">Environment variables</div>
+      <div style="font-family:'JetBrains Mono',monospace;font-size:.82rem;line-height:1.9">
+        <span style="color:var(--cyan)">RUST_LOG</span><span style="color:var(--tx2)">             error | warn | info | debug | trace  (default: warn)</span><br>
+        <span style="color:var(--cyan)">XDG_CONFIG_HOME</span><span style="color:var(--tx2)">      config dir               (default: ~/.config)</span><br>
+        <span style="color:var(--cyan)">XDG_DATA_HOME</span><span style="color:var(--tx2)">        snapshot dir             (default: ~/.local/share)</span><br>
+        <span style="color:var(--cyan)">SOUNDWORM_BACKEND</span><span style="color:var(--tx2)">    pipewire | coreaudio | wasapi (default: auto)</span>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<!-- ── FOOTER ── -->
+<footer>
+  <div class="footer-inner">
+    <div class="footer-logo">
+      <svg viewBox="0 0 26 26" fill="none" width="22" height="22">
+        <path d="M3 13 Q6 6 9 13 Q12 20 15 13 Q18 6 21 13 Q23 17 25 13" stroke="#22D3EE" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      soundworm
+    </div>
+    <div class="footer-links">
+      <a href="https://github.com/GrokImageCompression/soundworm">GitHub</a>
+      <a href="https://crates.io/crates/soundworm-core">crates.io</a>
+      <a href="https://docs.rs/soundworm-core">docs.rs</a>
+      <a href="https://github.com/GrokImageCompression/soundworm/issues">Issues</a>
+      <a href="https://github.com/GrokImageCompression/soundworm/blob/master/LICENSE-MIT">MIT</a>
+      <a href="https://github.com/GrokImageCompression/soundworm/blob/master/LICENSE-APACHE">Apache-2.0</a>
+    </div>
+    <div class="footer-copy">Built with Rust. Powered by PipeWire, CoreAudio, and WASAPI.</div>
+  </div>
+</footer>
+
+<script>
+  function switchTab(e, id) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.code-pane').forEach(p => p.classList.remove('active'));
+    e.target.classList.add('active');
+    document.getElementById('pane-' + id).classList.add('active');
+  }
+</script>
+</body>
+</html>
