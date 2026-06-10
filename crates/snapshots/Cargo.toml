@@ -1,0 +1,11 @@
+[package]
+name    = "soundworm-snapshots"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soundworm-core   = { path = "../core" }
+soundworm-policy = { path = "../policy" }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+tokio            = { workspace = true }

@@ -1,0 +1,12 @@
+[package]
+name    = "soundworm-policy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soundworm-core = { path = "../core" }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+toml           = { workspace = true }
+tracing        = { workspace = true }
+anyhow         = { workspace = true }

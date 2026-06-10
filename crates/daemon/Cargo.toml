@@ -1,0 +1,19 @@
+[package]
+name    = "soundworm-daemon"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "swd"
+path = "src/main.rs"
+
+[dependencies]
+soundworm-core          = { path = "../core" }
+soundworm-graph         = { path = "../graph" }
+soundworm-policy        = { path = "../policy" }
+soundworm-pipewire      = { path = "../pipewire-backend" }
+soundworm-observability = { path = "../observability" }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow             = { workspace = true }

@@ -1,0 +1,26 @@
+# soundworm default routing rules
+# copy to ~/.config/soundworm/rules/default.toml
+
+[[rules]]
+name     = "spotify-to-speakers"
+priority = 10
+[rules.matches]
+node_name = "spotify"
+[rules.action]
+Route = { target = "alsa_output.default" }
+
+[[rules]]
+name     = "zoom-usb-mic"
+priority = 20
+[rules.matches]
+node_name = "zoom"
+[rules.action]
+Route = { target = "alsa_input.usb_mic" }
+
+[[rules]]
+name     = "notify-unknown"
+priority = 0
+[rules.matches]
+node_kind = "Source"
+[rules.action]
+Notify = { message = "Unknown source requesting route" }

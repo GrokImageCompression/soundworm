@@ -1,0 +1,14 @@
+[Unit]
+Description=soundworm audio router daemon
+After=pipewire.service
+Wants=pipewire.service
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/swd
+Restart=on-failure
+RestartSec=3
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

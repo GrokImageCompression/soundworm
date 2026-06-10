@@ -1,0 +1,10 @@
+[package]
+name    = "soundworm-rhai"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soundworm-core = { path = "../core" }
+rhai           = { workspace = true }
+anyhow         = { workspace = true }
+tracing        = { workspace = true }

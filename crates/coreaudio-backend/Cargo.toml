@@ -1,0 +1,11 @@
+[package]
+name    = "soundworm-coreaudio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soundworm-core = { path = "../core" }
+async-trait    = { workspace = true }
+tracing        = { workspace = true }
+tokio          = { workspace = true }
+# coreaudio-rs = "0.11"   # uncomment on macOS

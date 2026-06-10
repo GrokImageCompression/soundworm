@@ -1,0 +1,11 @@
+[package]
+name    = "soundworm-wasapi"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+soundworm-core = { path = "../core" }
+async-trait    = { workspace = true }
+tracing        = { workspace = true }
+tokio          = { workspace = true }
+# windows = { version = "0.52", features = ["Win32_Media_Audio"] }   # uncomment on Windows
