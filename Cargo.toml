@@ -9,6 +9,7 @@ members = [
     "crates/rhai-engine",
     "crates/snapshots",
     "crates/observability",
+    "crates/ipc",
     "crates/cli",
     "crates/daemon",
 ]
