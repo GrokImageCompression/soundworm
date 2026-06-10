@@ -16,7 +16,7 @@ async fn main() -> Result<()> {
     tracing::info!(" platform: {}", std::env::consts::OS);
     tracing::info!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
 
-    let backend = PipeWireBackend::new();
+    let backend = PipeWireBackend::new()?;
     let nodes   = backend.enumerate_nodes().await?;
     tracing::info!("Backend '{}': {} nodes found", backend.name(), nodes.len());
 

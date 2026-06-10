@@ -1,11 +1,13 @@
 use async_trait::async_trait;
-use soundworm_core::{backend::AudioBackend, error::Result, link::Link, node::Node};
+use std::sync::mpsc;
+use soundworm_core::{backend::AudioBackend, error::Result, event::BackendEvent, link::Link, node::Node};
 
 pub struct CoreAudioBackend;
 
 #[async_trait]
 impl AudioBackend for CoreAudioBackend {
     fn name(&self) -> &str { "coreaudio" }
+    fn subscribe(&self) -> mpsc::Receiver<BackendEvent> { mpsc::channel().1 }
     async fn enumerate_nodes(&self) -> Result<Vec<Node>>       { Ok(vec![]) }
     async fn create_link(&self, _l: &Link) -> Result<()>       { Ok(()) }
     async fn destroy_link(&self, _l: &Link) -> Result<()>      { Ok(()) }

@@ -9,4 +9,4 @@ async-trait    = { workspace = true }
 tracing        = { workspace = true }
 anyhow         = { workspace = true }
 tokio          = { workspace = true }
-# pipewire = "0.8"   # uncomment when ready
+pipewire       = "0.10"

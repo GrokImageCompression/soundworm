@@ -12,7 +12,10 @@ soundworm-core          = { path = "../core" }
 soundworm-graph         = { path = "../graph" }
 soundworm-policy        = { path = "../policy" }
 soundworm-observability = { path = "../observability" }
+soundworm-pipewire      = { path = "../pipewire-backend" }
+soundworm-snapshots     = { path = "../snapshots" }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow             = { workspace = true }
+comfy-table        = "7"
