@@ -137,11 +137,32 @@ policy engine. Never blocks on I/O.
 
 ## 14. Roadmap to 1.0
 
-### Current state (2026-06)
+### Current state (2026-06-10)
 
-Skeleton only. All crates compile as stubs (~650 LOC total). No backend
-talks to a real audio system yet, no IPC protocol exists, no tests run
-against a real graph. v0.1 is the first milestone with end-user value.
+v0.1 shipped 2026-06-09. v0.2 is partway through:
+
+- IPC protocol spec at `docs/IPC.md`; `soundworm-ipc` crate holds wire
+  types + tokio client + NDJSON codec (1 MiB cap).
+- Daemon `swd` exposes a Unix socket at
+  `$XDG_RUNTIME_DIR/soundworm/swd.sock` (override `SOUNDWORM_SOCK`).
+  All proto-v1 ops implemented end-to-end: `Hello`, `ListNodes`,
+  `ListLinks`, `Link`, `Unlink`, `Subscribe`/`Unsubscribe`, `LoadRules`,
+  `ReloadRules`, `Snapshot`, `Restore`, `Shutdown`.
+- Auto-routing dispatch wired: `start_event_pump` matches each
+  `NodeAppeared` against `RulesEngine`, stages a `PendingRoute`, and
+  fires `backend.create_link` once both ends have ports — emitting
+  `RulesApplied` or `LinkRejected` IPC events. Only the
+  `matches.node_name` predicate is honored so far; `node_kind` and
+  `property` are parsed but unused. `Action::Deny` works;
+  `SetVolume`/`Notify` log only.
+- CLI: `sw list/link/unlink/watch` go through the daemon by default
+  (with `--in-process` escape hatch). `sw snapshot save/load` still
+  uses an in-process backend — pending migration to daemon ops.
+- Workspace test count: 20 (incl. 2 auto-route tests in
+  `crates/daemon/src/state.rs` driven by `MockBackend`).
+- Still TODO before v0.2 exit: CLI subcommands for the new IPC ops
+  (`sw rules load/reload`, `sw shutdown`), `sw snapshot` daemon
+  migration, and `contrib/systemd` user unit.
 
 ### Cross-cutting tracks (worked on continuously)
 

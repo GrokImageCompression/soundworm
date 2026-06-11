@@ -4,7 +4,6 @@ mod state;
 use anyhow::Result;
 use soundworm_observability::{metrics::Metrics, xrun::XrunLog};
 use soundworm_pipewire::PipeWireBackend;
-use soundworm_policy::rules::RulesEngine;
 use soundworm_core::backend::AudioBackend;
 use state::DaemonState;
 use std::sync::Arc;
@@ -38,10 +37,10 @@ async fn main() -> Result<()> {
 
     let rules_path = config_dir().join("soundworm/rules/default.toml");
     if rules_path.exists() {
-        let content = std::fs::read_to_string(&rules_path)?;
-        let mut rules = RulesEngine::default();
-        rules.load_toml(&content)?;
-        tracing::info!("Loaded {} rules from {:?}", rules.rule_count(), rules_path);
+        match state.load_rules_from(rules_path.clone()) {
+            Ok(n) => tracing::info!("Loaded {} rules from {:?}", n, rules_path),
+            Err(e) => tracing::warn!("Failed to load rules at {:?}: {e:#}", rules_path),
+        }
     } else {
         tracing::info!("No rules file at {:?} — using defaults", rules_path);
     }
@@ -57,6 +56,9 @@ async fn main() -> Result<()> {
     tracing::info!("Ready — ctrl-c to stop");
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {}
+        _ = state.shutdown.notified() => {
+            tracing::info!("Shutdown signal received via IPC");
+        }
         _ = ipc => {}
     }
     tracing::info!("Shutdown complete");

@@ -38,9 +38,15 @@ impl RulesEngine {
     }
 
     pub fn evaluate(&self, node_name: &str) -> Option<&Action> {
+        self.evaluate_rule(node_name).map(|r| &r.action)
+    }
+
+    /// Same as [`evaluate`] but returns the matching rule so callers can
+    /// access its name (for logging and `RulesApplied` events).
+    pub fn evaluate_rule(&self, node_name: &str) -> Option<&RoutingRule> {
         self.rules.iter().find(|r| {
             r.matches.node_name.as_deref() == Some(node_name)
-        }).map(|r| &r.action)
+        })
     }
 
     pub fn rule_count(&self) -> usize { self.rules.len() }

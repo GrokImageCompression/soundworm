@@ -139,12 +139,53 @@ async fn dispatch(req: Request, ctx: &mut ClientCtx) -> Response {
             }
             ok(id, ResponseData::Empty {})
         }
-        Op::LoadRules { .. }
-        | Op::ReloadRules
-        | Op::Snapshot { .. }
-        | Op::Restore { .. }
-        | Op::Shutdown => err(id, ErrorCode::UnknownOp, "not implemented yet"),
+        Op::LoadRules { path } => do_load_rules(id, &ctx.state, path),
+        Op::ReloadRules => do_reload_rules(id, &ctx.state),
+        Op::Snapshot { name } => do_snapshot(id, &ctx.state, name).await,
+        Op::Restore { name } => do_restore(id, &ctx.state, name).await,
+        Op::Shutdown => do_shutdown(id, &ctx.state),
     }
+}
+
+fn do_load_rules(id: u64, state: &Arc<DaemonState>, path: String) -> Response {
+    match state.load_rules_from(PathBuf::from(path)) {
+        Ok(rule_count) => ok(id, ResponseData::Rules { rule_count }),
+        Err(e) => err(id, ErrorCode::RulesError, &e.to_string()),
+    }
+}
+
+fn do_reload_rules(id: u64, state: &Arc<DaemonState>) -> Response {
+    match state.reload_rules() {
+        Ok(rule_count) => ok(id, ResponseData::Rules { rule_count }),
+        Err(e) => err(id, ErrorCode::RulesError, &e.to_string()),
+    }
+}
+
+async fn do_snapshot(id: u64, state: &Arc<DaemonState>, name: String) -> Response {
+    let snap = state.build_snapshot(&name);
+    if let Err(e) = soundworm_snapshots::save(&snap).await {
+        return err(id, ErrorCode::Internal, &e.to_string());
+    }
+    let path = soundworm_snapshots::snapshot_dir()
+        .join(format!("{}.json", name))
+        .to_string_lossy()
+        .into_owned();
+    ok(id, ResponseData::Snapshot { path })
+}
+
+async fn do_restore(id: u64, state: &Arc<DaemonState>, name: String) -> Response {
+    let snap = match soundworm_snapshots::load(&name).await {
+        Ok(s) => s,
+        Err(e) => return err(id, ErrorCode::NotFound, &e.to_string()),
+    };
+    let (applied, skipped) = state.apply_snapshot(&snap).await;
+    ok(id, ResponseData::Restore { applied, skipped })
+}
+
+fn do_shutdown(id: u64, state: &Arc<DaemonState>) -> Response {
+    tracing::info!("Shutdown requested via IPC");
+    state.shutdown.notify_waiters();
+    ok(id, ResponseData::Empty {})
 }
 
 fn do_subscribe(
