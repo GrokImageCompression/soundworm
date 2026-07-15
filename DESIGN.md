@@ -415,8 +415,15 @@ model (background service + thin UI).
   reach the daemon. Layout persistence to
   `$XDG_DATA_HOME/soundworm/ui-layout.json` still TODO — layout is
   recomputed each refresh.
-- **ui-v0.3** — session snapshot management UI: save/load/list using
-  existing `Snapshot`/`Restore` ops.
+- **ui-v0.3 (done)** — session snapshot management UI in the sidebar:
+  save/restore via the daemon's `Snapshot`/`Restore` ops, list read from
+  the snapshot dir on disk (as the CLI does). Restore replays links, not
+  node positions (those persist separately via ui-layout.json). Shook out
+  two pre-existing daemon bugs: `Script`/`Snapshot` had identical
+  untagged wire shapes so snapshot save always mis-parsed as Script; and
+  the link-id round-trip (`do_link` returned a placeholder 0,
+  `destroy_link` keyed off the wrong id) meant `sw unlink` and UI edge
+  deletes silently no-oped. Both fixed.
 - **ui-v0.4** — metrics overlay: xrun badges on nodes, latency sparklines
   on links, drawn from `GetMetrics` + `XrunObserved` events.
 - **ui-v0.5** — rules/script editor pane with `LoadRules`/`LoadScript`.

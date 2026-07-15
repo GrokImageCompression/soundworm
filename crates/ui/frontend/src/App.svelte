@@ -7,6 +7,7 @@
   import {
     listNodes, listLinks, socketPath, onSwdEvent,
     createLink, deleteLink, loadLayout, saveLayout,
+    listSnapshots, saveSnapshot, restoreSnapshot,
   } from "./swd.js";
   import { layoutNodes } from "./layout.js";
 
@@ -17,6 +18,8 @@
   let links  = $state([]);   // raw IPC links, shown in sidebar
   let events = $state([]);   // ring buffer of recent events
   let savedLayout = $state({}); // node name → {x, y}, persisted to disk
+  let snapshots = $state([]);   // saved snapshot names
+  let snapName  = $state("");   // save-snapshot input
 
   function nodeKind(media_class) {
     if (!media_class) return "unknown";
@@ -162,6 +165,40 @@
     saveLayout(positions).catch((e) => { status = `layout save failed: ${e}`; });
   }
 
+  async function refreshSnapshots() {
+    try {
+      snapshots = await listSnapshots();
+    } catch (e) {
+      status = `snapshot list failed: ${e}`;
+    }
+  }
+
+  async function onSaveSnapshot() {
+    const name = snapName.trim();
+    if (!name) return;
+    try {
+      await saveSnapshot(name);
+      snapName = "";
+      await refreshSnapshots();
+      pushEvent({ kind: "SnapshotSaved", data: { name } });
+    } catch (e) {
+      status = `snapshot save failed: ${e}`;
+    }
+  }
+
+  async function onRestoreSnapshot(name) {
+    try {
+      const { applied, skipped } = await restoreSnapshot(name);
+      // The daemon replays links through the backend, which emits
+      // LinkAppeared/LinkRemoved; the event subscriber refreshes the
+      // canvas. No manual refresh needed.
+      status = `restored '${name}': ${applied} applied, ${skipped} skipped`;
+      pushEvent({ kind: "SnapshotRestored", data: { name, applied, skipped } });
+    } catch (e) {
+      status = `snapshot restore failed: ${e}`;
+    }
+  }
+
   function nodeNameFor(id) {
     const n = nodes.find((nd) => nd.id === id);
     return n?.sw?.name ?? null;
@@ -260,6 +297,7 @@
     socket = await socketPath();
     savedLayout = await loadLayout();
     await refresh();
+    await refreshSnapshots();
     await onSwdEvent((ev) => {
       pushEvent(ev);
       const k = ev.kind;
@@ -313,6 +351,27 @@
     </div>
 
     <aside class="sidebar">
+      <section>
+        <h2>Snapshots ({snapshots.length})</h2>
+        <form class="snap-save" onsubmit={(e) => { e.preventDefault(); onSaveSnapshot(); }}>
+          <input
+            type="text"
+            placeholder="snapshot name"
+            bind:value={snapName}
+            spellcheck="false" />
+          <button type="submit" disabled={!snapName.trim()}>Save</button>
+        </form>
+        <ul class="list">
+          {#each snapshots as s}
+            <li class="snap-row">
+              <span class="snap-name">{s}</span>
+              <button class="restore" onclick={() => onRestoreSnapshot(s)}>Restore</button>
+            </li>
+          {:else}
+            <li class="muted">none saved</li>
+          {/each}
+        </ul>
+      </section>
       <section>
         <h2>Links ({links.length})</h2>
         <ul class="list">
@@ -374,6 +433,26 @@
   .list li { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
   .events .ts { color: var(--muted); margin-right: 6px; }
   .muted { color: var(--muted); }
+
+  .snap-save { display: flex; gap: 6px; margin-bottom: 8px; }
+  .snap-save input {
+    flex: 1; min-width: 0;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 6px; font: 12px ui-monospace, Menlo, monospace;
+  }
+  .snap-save input:focus { outline: none; border-color: var(--accent); }
+  .snap-save button, .snap-row .restore {
+    flex-shrink: 0; white-space: nowrap;
+    background: var(--accent); color: #0b1220; border: none;
+    border-radius: 4px; padding: 4px 8px; font-size: 11px;
+    cursor: pointer;
+  }
+  .snap-save button:disabled { background: var(--border); color: var(--muted); cursor: default; }
+  .snap-row { display: flex; align-items: center; gap: 8px; }
+  .snap-row .snap-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .snap-row .restore { background: transparent; color: var(--accent); border: 1px solid var(--border); }
+  .snap-row .restore:hover { border-color: var(--accent); }
 
   /* Dark-theme overrides for Svelte Flow's default widgets. */
   :global(.svelte-flow__controls) {

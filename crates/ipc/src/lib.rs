@@ -104,7 +104,14 @@ pub enum ResponseData {
     Link { link_id: LinkId },
     Rules { rule_count: usize },
     Script { path: String },
-    Snapshot { path: String },
+    // Distinct JSON key from Script's `path`: in an untagged enum serde
+    // picks the first structurally-matching variant, so an identical
+    // `{path}` shape would always deserialize as Script and never reach
+    // Snapshot (same footgun documented on NodeView).
+    Snapshot {
+        #[serde(rename = "snapshot_path")]
+        path: String,
+    },
     Restore { applied: usize, skipped: usize },
     Metrics { metrics: MetricsPayload },
     Empty {},
@@ -295,5 +302,27 @@ mod tests {
         let named: PortRef =
             serde_json::from_str(r#"{"node":"Firefox","port":"output_FL"}"#).unwrap();
         assert!(matches!(named, PortRef::Named { .. }));
+    }
+
+    // Regression: Script and Snapshot both carry a single path. In an
+    // untagged enum, identical shapes make the first variant (Script)
+    // always win, so a Snapshot response deserialized as Script and
+    // `sw snapshot save` / the UI reported "unexpected response". The
+    // snapshot_path rename keeps the two shapes distinct.
+    #[test]
+    fn snapshot_response_does_not_collide_with_script() {
+        let snap = serde_json::to_string(&ResponseData::Snapshot { path: "/x/s.json".into() })
+            .expect("serialize");
+        assert!(matches!(
+            serde_json::from_str::<ResponseData>(&snap).expect("deserialize"),
+            ResponseData::Snapshot { .. }
+        ));
+
+        let script = serde_json::to_string(&ResponseData::Script { path: "/x/r.rhai".into() })
+            .expect("serialize");
+        assert!(matches!(
+            serde_json::from_str::<ResponseData>(&script).expect("deserialize"),
+            ResponseData::Script { .. }
+        ));
     }
 }

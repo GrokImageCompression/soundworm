@@ -19,6 +19,12 @@ export const deleteLink = (linkId) =>
 export const loadLayout = () => invoke("load_layout");
 export const saveLayout = (positions) => invoke("save_layout", { positions });
 
+// Session snapshots. Save/restore go through the daemon; list reads the
+// snapshot dir directly, same as the CLI.
+export const listSnapshots   = () => invoke("list_snapshots");
+export const saveSnapshot    = (name) => invoke("save_snapshot", { name });
+export const restoreSnapshot = (name) => invoke("restore_snapshot", { name });
+
 export function onSwdEvent(handler) {
   return listen("swd-event", (msg) => handler(msg.payload));
 }

@@ -60,18 +60,23 @@ async fn socket_path() -> String {
     default_socket_path().display().to_string()
 }
 
-// Mirrors soundworm_snapshots::snapshot_dir's XDG convention. Not shared
-// via that crate: the UI is deliberately decoupled from the daemon-side
-// workspace, and the layout file is a UI-only concern the daemon never
-// reads.
-fn layout_path() -> std::path::PathBuf {
+// Mirrors soundworm_snapshots' XDG convention. Not shared via that crate:
+// the UI is deliberately decoupled from the daemon-side workspace. Save
+// and restore go through the daemon; the UI only reads these paths to
+// list snapshots and to persist its own layout, same as the CLI reads
+// the snapshot dir directly for `sw snapshot list`.
+fn data_dir() -> std::path::PathBuf {
     let base = std::env::var("XDG_DATA_HOME")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| {
             let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
             std::path::PathBuf::from(home).join(".local/share")
         });
-    base.join("soundworm/ui-layout.json")
+    base.join("soundworm")
+}
+
+fn layout_path() -> std::path::PathBuf {
+    data_dir().join("ui-layout.json")
 }
 
 #[tauri::command]
@@ -121,6 +126,55 @@ async fn delete_link(
     let op = Op::Unlink { link_id: LinkId(link_id) };
     client.request(op).await.map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[tauri::command]
+async fn list_snapshots() -> Result<Vec<String>, String> {
+    let dir = data_dir().join("snapshots");
+    let mut entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e.to_string()),
+    };
+    let mut names = Vec::new();
+    while let Some(Ok(entry)) = entries.next() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                names.push(stem.to_owned());
+            }
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+#[tauri::command]
+async fn save_snapshot(
+    name: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    let mut guard = state.client.lock().await;
+    let client = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+    match client.request(Op::Snapshot { name }).await.map_err(|e| e.to_string())? {
+        ResponseData::Snapshot { path } => Ok(path),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+async fn restore_snapshot(
+    name: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<serde_json::Value, String> {
+    let mut guard = state.client.lock().await;
+    let client = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+    match client.request(Op::Restore { name }).await.map_err(|e| e.to_string())? {
+        ResponseData::Restore { applied, skipped } => {
+            Ok(serde_json::json!({ "applied": applied, "skipped": skipped }))
+        }
+        other => Err(format!("unexpected response: {other:?}")),
+    }
 }
 
 async fn run_event_pump(app: AppHandle) -> Result<()> {
@@ -185,6 +239,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_nodes, list_ports, list_links, socket_path,
             create_link, delete_link, load_layout, save_layout,
+            list_snapshots, save_snapshot, restore_snapshot,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch soundworm-ui");
