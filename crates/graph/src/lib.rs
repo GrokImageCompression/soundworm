@@ -42,6 +42,10 @@ impl AudioGraph {
         self.nodes.values().find(|n| n.name == name)
     }
 
+    pub fn ports(&self) -> impl Iterator<Item = &Port> {
+        self.ports.values()
+    }
+
     pub fn ports_of(&self, node_id: &NodeId) -> Vec<&Port> {
         self.ports.values().filter(|p| &p.node_id == node_id).collect()
     }

@@ -123,8 +123,19 @@ async fn dispatch(req: Request, ctx: &mut ClientCtx) -> Response {
             })
         }
         Op::ListNodes => {
-            let nodes = ctx.state.graph.lock().unwrap().nodes().cloned().collect();
+            let g = ctx.state.graph.lock().unwrap();
+            let nodes = g
+                .nodes()
+                .map(|n| soundworm_ipc::NodeView {
+                    node: n.clone(),
+                    ports: g.ports_of(&n.id).into_iter().cloned().collect(),
+                })
+                .collect();
             ok(id, ResponseData::Nodes { nodes })
+        }
+        Op::ListPorts => {
+            let ports = ctx.state.graph.lock().unwrap().ports().cloned().collect();
+            ok(id, ResponseData::Ports { ports })
         }
         Op::ListLinks => {
             let links = ctx.state.graph.lock().unwrap().links().cloned().collect();
@@ -285,18 +296,40 @@ async fn do_link(
     source: soundworm_ipc::PortRef,
     sink: soundworm_ipc::PortRef,
 ) -> Response {
+    tracing::info!(?source, ?sink, req_id = id, "Op::Link received");
     let (src_pid, sink_pid) = {
         let graph = state.graph.lock().unwrap();
-        let src = match resolve_port(&graph, &source, Direction::Output) {
+
+        // Resolve the sink first to determine its media kind; use that
+        // as a constraint when resolving the source so we never accept
+        // an Audio→MIDI or MIDI→Audio pair. PW would silently destroy
+        // such a link a few ms after factory create.
+        let sk = match resolve_port(&graph, &sink, Direction::Input, None) {
             Ok(p) => p,
-            Err(e) => return fail(id, e),
+            Err(e) => {
+                tracing::warn!(?sink, error = ?e, "resolve sink port failed");
+                return fail(id, e);
+            }
         };
-        let sk = match resolve_port(&graph, &sink, Direction::Input) {
+        let sink_kind = graph
+            .get_port(&sk)
+            .and_then(|p| graph.get_node(&p.node_id))
+            .map(|n| n.media_kind());
+
+        let src = match resolve_port(&graph, &source, Direction::Output, sink_kind) {
             Ok(p) => p,
-            Err(e) => return fail(id, e),
+            Err(e) => {
+                tracing::warn!(?source, error = ?e, "resolve source port failed");
+                return fail(id, e);
+            }
         };
         (src, sk)
     };
+    tracing::info!(
+        src_port = src_pid.0,
+        sink_port = sink_pid.0,
+        "ports resolved; calling backend.create_link"
+    );
 
     let link = Link {
         id: LinkId(0),
@@ -338,4 +371,258 @@ fn err(id: u64, code: ErrorCode, message: &str) -> Response {
 
 fn fail(id: u64, e: ProtoError) -> Response {
     Response { id, ok: false, data: None, error: Some(e) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use soundworm_core::{
+        backend::AudioBackend,
+        event::BackendEvent,
+        node::{NodeId, NodeKind, Node},
+        port::{Direction, Port, PortId},
+    };
+    use soundworm_graph::mock::MockBackend;
+    use soundworm_ipc::PortRef;
+    use std::sync::Arc;
+
+    fn node(id: u64, name: &str, kind: NodeKind) -> Node {
+        let media_class = match kind {
+            NodeKind::Source => "Audio/Source",
+            NodeKind::Sink => "Audio/Sink",
+            _ => "Stream/Output/Audio",
+        };
+        Node {
+            id: NodeId(id),
+            name: name.into(),
+            kind,
+            app_name: None,
+            media_class: media_class.into(),
+            sample_rate: 48000,
+            channels: 2,
+            latency_ms: 0.0,
+            properties: Default::default(),
+        }
+    }
+
+    fn port(id: u64, node_id: u64, dir: Direction) -> Port {
+        Port {
+            id: PortId(id),
+            node_id: NodeId(node_id),
+            name: format!("port_{id}"),
+            direction: dir,
+            channels: 2,
+        }
+    }
+
+    /// Populate a DaemonState's graph with two connectable nodes and
+    /// their ports, going through the real event pump so the test
+    /// exercises the same path as live PipeWire input.
+    async fn seeded_state() -> Arc<crate::state::DaemonState> {
+        let mock = Arc::new(MockBackend::new());
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(node(1, "src-app", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        mock.emit(BackendEvent::NodeAppeared(node(2, "speakers", NodeKind::Sink)));
+        mock.emit(BackendEvent::PortAppeared(port(200, 2, Direction::Input)));
+        // Let the pump drain the events into the graph.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        // Stash the mock backend handle for assertions via downcast-free
+        // path: callers also still hold their own Arc<MockBackend>.
+        state
+    }
+
+    /// Op::ListNodes returns NodeView with ports embedded — the wire
+    /// shape the UI is bound to. Catches anyone who removes the
+    /// embedding or breaks the join.
+    #[tokio::test]
+    async fn list_nodes_response_embeds_ports() {
+        let state = seeded_state().await;
+
+        let g = state.graph.lock().unwrap();
+        let nvs: Vec<soundworm_ipc::NodeView> = g
+            .nodes()
+            .map(|n| soundworm_ipc::NodeView {
+                node: n.clone(),
+                ports: g.ports_of(&n.id).into_iter().cloned().collect(),
+            })
+            .collect();
+        drop(g);
+
+        assert_eq!(nvs.len(), 2);
+        for nv in &nvs {
+            assert_eq!(
+                nv.ports.len(), 1,
+                "node {} should carry exactly its one port",
+                nv.node.id.0
+            );
+            assert_eq!(nv.ports[0].node_id, nv.node.id, "port→node id");
+        }
+    }
+
+    /// do_link with PortRef::Id → backend.create_link is called with
+    /// the exact port ids. This is the chain the UI exercises when
+    /// you drag a connection.
+    #[tokio::test]
+    async fn do_link_by_port_id_invokes_backend_create_link() {
+        let mock = Arc::new(MockBackend::new());
+        let calls = Arc::clone(&mock.link_calls);
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(node(1, "src-app", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        mock.emit(BackendEvent::NodeAppeared(node(2, "speakers", NodeKind::Sink)));
+        mock.emit(BackendEvent::PortAppeared(port(200, 2, Direction::Input)));
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let resp = do_link(
+            1,
+            &state,
+            PortRef::Id(PortId(100)),
+            PortRef::Id(PortId(200)),
+        )
+        .await;
+        assert!(resp.ok, "do_link by id should succeed, got {resp:?}");
+        let calls = calls.lock().unwrap();
+        assert_eq!(*calls, vec!["create 100→200".to_string()]);
+    }
+
+    /// do_link with PortRef::Named resolves to the first
+    /// output/input port — matches what the UI's onConnect sends.
+    #[tokio::test]
+    async fn do_link_by_node_name_resolves_first_port() {
+        let mock = Arc::new(MockBackend::new());
+        let calls = Arc::clone(&mock.link_calls);
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(node(1, "src-app", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        mock.emit(BackendEvent::NodeAppeared(node(2, "speakers", NodeKind::Sink)));
+        mock.emit(BackendEvent::PortAppeared(port(200, 2, Direction::Input)));
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let resp = do_link(
+            7,
+            &state,
+            PortRef::Named { node: "src-app".into(), port: String::new() },
+            PortRef::Named { node: "speakers".into(), port: String::new() },
+        )
+        .await;
+        assert!(resp.ok, "do_link by name should succeed, got {resp:?}");
+        let calls = calls.lock().unwrap();
+        assert_eq!(*calls, vec!["create 100→200".to_string()]);
+    }
+
+    fn midi_node(id: u64, name: &str, kind: NodeKind) -> Node {
+        let media_class = match kind {
+            NodeKind::Source => "Midi/Source",
+            NodeKind::Sink => "Midi/Sink",
+            _ => "Midi/Bridge",
+        };
+        let mut n = node(id, name, kind);
+        // Override media_class to a MIDI string so media_kind() returns Midi.
+        n.media_class = media_class.into();
+        n
+    }
+
+    /// PW silently destroys cross-media-kind links a few ms after
+    /// factory create. The daemon must reject the resolution outright.
+    #[tokio::test]
+    async fn do_link_rejects_midi_source_into_audio_sink() {
+        let mock = Arc::new(MockBackend::new());
+        let calls = Arc::clone(&mock.link_calls);
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(midi_node(1, "bluez_midi", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        mock.emit(BackendEvent::NodeAppeared(node(2, "speakers", NodeKind::Sink)));
+        mock.emit(BackendEvent::PortAppeared(port(200, 2, Direction::Input)));
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let resp = do_link(
+            5,
+            &state,
+            PortRef::Named { node: "bluez_midi".into(), port: String::new() },
+            PortRef::Named { node: "speakers".into(),   port: String::new() },
+        )
+        .await;
+        assert!(!resp.ok, "midi → audio must be rejected");
+        assert_eq!(resp.error.as_ref().map(|e| e.code), Some(ErrorCode::BadRequest));
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "backend.create_link must not be invoked for incompatible kinds"
+        );
+    }
+
+    /// Linking two Sources together has no Input port to land on, so
+    /// we'd already fail naturally — but the *kind* check should bite
+    /// first with a clearer error when the user asks for source-to-
+    /// source via PortRef::Named (which the UI does).
+    #[tokio::test]
+    async fn do_link_rejects_source_into_source() {
+        let mock = Arc::new(MockBackend::new());
+        let calls = Arc::clone(&mock.link_calls);
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(node(1, "src-a", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        mock.emit(BackendEvent::NodeAppeared(node(2, "src-b", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(200, 2, Direction::Output)));
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        let resp = do_link(
+            6,
+            &state,
+            PortRef::Named { node: "src-a".into(), port: String::new() },
+            PortRef::Named { node: "src-b".into(), port: String::new() },
+        )
+        .await;
+        assert!(!resp.ok, "source → source must be rejected");
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// do_link with a name that doesn't resolve must fail cleanly
+    /// without calling backend.create_link — protects against the
+    /// "second-link failure clobbers the first" UI race that pushed
+    /// us to this whole testing exercise.
+    #[tokio::test]
+    async fn do_link_unknown_node_returns_not_found() {
+        let mock = Arc::new(MockBackend::new());
+        let calls = Arc::clone(&mock.link_calls);
+        let state = Arc::new(crate::state::DaemonState::new(
+            mock.clone() as Arc<dyn AudioBackend>,
+        ));
+        state.start_event_pump();
+        mock.emit(BackendEvent::NodeAppeared(node(1, "src-app", NodeKind::Source)));
+        mock.emit(BackendEvent::PortAppeared(port(100, 1, Direction::Output)));
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        let resp = do_link(
+            3,
+            &state,
+            PortRef::Named { node: "src-app".into(), port: String::new() },
+            PortRef::Named { node: "nonexistent".into(), port: String::new() },
+        )
+        .await;
+        assert!(!resp.ok, "must fail for unknown sink node");
+        assert_eq!(
+            resp.error.as_ref().map(|e| e.code),
+            Some(ErrorCode::NotFound),
+        );
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "backend.create_link must not be called on resolution failure"
+        );
+    }
 }

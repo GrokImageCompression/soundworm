@@ -49,6 +49,7 @@ Every message is a JSON object with a `type` discriminator and a numeric
 |-----------------|---------------------------|------------------------------|
 | `Hello`         | `{ client, version }`     | `{ daemon_version, proto: 1 }` |
 | `ListNodes`     | —                         | `{ nodes: [Node, ...] }`     |
+| `ListPorts`     | —                         | `{ ports: [Port, ...] }`     |
 | `ListLinks`     | —                         | `{ links: [Link, ...] }`     |
 | `Link`          | `{ source, sink }`        | `{ link_id }`                |
 | `Unlink`        | `{ link_id }`             | `{}`                         |

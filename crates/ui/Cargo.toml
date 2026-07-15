@@ -1,0 +1,38 @@
+[package]
+name    = "soundworm-ui"
+version = "0.1.0"
+edition = "2021"
+description = "Tauri desktop UI for soundworm. Loopback-style node graph over the swd IPC socket."
+license = "MIT OR Apache-2.0"
+
+# Not a workspace member: pulls in webkit2gtk on Linux and bundling
+# toolchains we don't want on every CI run. Build explicitly with
+#   cargo tauri dev          (from inside crates/ui)
+#   cargo build -p soundworm-ui --manifest-path crates/ui/Cargo.toml
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri        = { version = "2", features = [] }
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+tokio        = { version = "1", features = ["full"] }
+anyhow       = "1"
+tracing      = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+soundworm-core = { path = "../core" }
+soundworm-ipc  = { path = "../ipc" }
+
+# Workspace patch (below) pulls brotli from git master to fix a
+# crates.io 8.0.3 bug where alloc-no-stdlib 2.x and 3.x both appear and
+# refuse to unify. Master widens the range to ">=2.0.4, <4" so cargo
+# picks one. Remove once a fixed 8.0.4+ is published.
+
+[patch.crates-io]
+brotli = { git = "https://github.com/dropbox/rust-brotli", branch = "master" }
+
+[[bin]]
+name = "soundworm-ui"
+path = "src/main.rs"

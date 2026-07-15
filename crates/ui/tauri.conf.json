@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "soundworm",
+  "version": "0.1.0",
+  "identifier": "io.soundworm.ui",
+  "build": {
+    "frontendDist": "./frontend/dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": { "script": "npm run dev", "cwd": "frontend" },
+    "beforeBuildCommand": { "script": "npm run build", "cwd": "frontend" }
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "soundworm",
+        "width": 1100,
+        "height": 720,
+        "resizable": true,
+        "backgroundColor": "#1a1d21"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

@@ -4,3 +4,14 @@ Cargo.lock
 *.swo
 .env
 .DS_Store
+
+# Tauri UI build artifacts. The frontend's package-lock.json IS tracked
+# so installs reproduce; everything below is generated.
+crates/ui/frontend/node_modules/
+crates/ui/frontend/dist/
+crates/ui/frontend/.vite/
+crates/ui/target/
+crates/ui/gen/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

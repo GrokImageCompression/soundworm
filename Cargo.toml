@@ -13,6 +13,7 @@ members = [
     "crates/cli",
     "crates/daemon",
 ]
+exclude = ["crates/ui"]
 resolver = "2"
 
 [workspace.dependencies]

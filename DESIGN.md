@@ -13,7 +13,8 @@
 ## 2. Non-Goals (v0.x)
 
 - Audio DSP or mixing
-- GUI application
+- GUI application *in the core workspace's release artifacts* (a Tauri UI
+  is being scaffolded as a separate layer above the daemon — see §15)
 - Replacing PipeWire itself
 - Network audio transport
 
@@ -349,6 +350,102 @@ Exit: ≥10 external users reporting; no P0 bugs open for >2 weeks.
 - macOS and Windows backends at feature parity (enumerate/link/unlink/
   events); platform gaps documented
 - Release announcement, changelog, upgrade guide from 0.x
+
+## 15. TODOs / Future tracks
+
+### 15.1 Tauri desktop UI (`soundworm-ui`)
+
+Goal: a Loopback-style node-graph desktop app sitting on top of `swd`,
+not replacing it. The daemon stays the source of truth; the UI is a
+view + editor that drives it over the existing IPC socket.
+
+**Posture decision:** the UI is a *client*, not a host. It connects to
+`swd` over the unix socket like `sw` does. This keeps the headless
+daemon useful, lets CLI and GUI coexist, and matches Loopback's mental
+model (background service + thin UI).
+
+**Stack:**
+- Tauri 2.x shell (Rust backend, system webview frontend)
+- Frontend: vanilla HTML/JS for the scaffold; pick a graph library
+  (Rete.js, React Flow, Svelte Flow) once interaction needs are real
+- Rust side links `soundworm-ipc` directly to talk to `swd`
+- Tauri commands proxy IPC calls; Tauri events fan out `Subscribe`
+  stream to the webview
+
+**What must land in soundworm-proper before the UI is useful:**
+- **Richer IPC event coverage.** The current `Subscribe` op streams
+  `BackendEvent`s plus `RulesApplied`/`LinkRejected`/`XrunObserved` —
+  enough for v0.1 list rendering, but the UI needs the full set of
+  granular deltas so it can update live instead of polling: `NodeAdded`,
+  `NodeRemoved`, `NodeChanged` (props/name), `PortAdded`/`PortRemoved`,
+  `LinkAdded`/`LinkRemoved`/`LinkChanged`, `XrunFired { node, gap_ms }`,
+  `LatencySample { node, ms }`. Audit `start_event_pump` and the
+  pipewire-backend emitter to confirm each of these has a corresponding
+  wire event; fill any gaps before binding the UI to them.
+- **Stable JSON schema for the graph state.** The wire payloads serialize
+  from `soundworm-core` today, but the field names have never been
+  treated as a public contract. Before the UI ships, freeze the schema:
+  document every field of `Node`/`Port`/`Link`/`BackendEvent` on the
+  wire, generate TS types from the Rust types (`ts-rs` or `specta`), and
+  add a `proto: 2` bump in `Hello` that gates the new event set. Treat
+  these payloads as the daemon's public API from that point on.
+- **`swd subscribe`-style endpoint / websocket bridge.** The Tauri Rust
+  side can speak the unix socket directly, so the in-app path doesn't
+  need a websocket. But two cases push us toward one anyway: (a) future
+  in-browser dashboards or remote tooling, and (b) frontend-only dev
+  loops where running the Rust shell is overkill. Plan: add an opt-in
+  `swd --listen-ws 127.0.0.1:PORT` flag that bridges the same NDJSON
+  protocol over a websocket frame-per-line, loopback-only, off by
+  default. Same wire format, same auth model (none, localhost-only).
+  Defer implementation until ui-v0.2 actually needs it.
+- No new daemon *ops* required for v0.1 of the UI — `ListNodes`,
+  `ListLinks`, `Link`, `Unlink`, `Subscribe`, `GetMetrics`,
+  `Snapshot`/`Restore` cover the Loopback feature surface. The work
+  above is event-coverage and schema-freeze, not new endpoints.
+
+**UI roadmap (rough, not committed):**
+- **ui-v0.1** — connect to socket, list nodes/ports in a sidebar, list
+  links in a table. No graph yet. Live updates via `Subscribe`. Proves
+  the wiring end-to-end.
+- **ui-v0.2** — node-graph canvas. Nodes positioned heuristically
+  (sources left, sinks right, streams middle). Click-drag from output
+  port to input port issues `Link`; click on link deletes via `Unlink`.
+  Layout state persisted to `$XDG_DATA_HOME/soundworm/ui-layout.json`.
+- **ui-v0.3** — session snapshot management UI: save/load/list using
+  existing `Snapshot`/`Restore` ops.
+- **ui-v0.4** — metrics overlay: xrun badges on nodes, latency sparklines
+  on links, drawn from `GetMetrics` + `XrunObserved` events.
+- **ui-v0.5** — rules/script editor pane with `LoadRules`/`LoadScript`.
+  Monaco or CodeMirror in the webview.
+
+**Out of scope (parity gaps vs Loopback we will not chase):**
+- Virtual audio devices (needs HAL plugin on macOS / kernel driver on
+  Windows). PipeWire null-sinks could approximate this on Linux —
+  separate decision.
+- Per-channel routing matrix UI. PipeWire ports already expose
+  channels; deferred until users ask.
+- Built-in audio metering (RMS/peak). Would require a tap node in the
+  graph; not a v1 concern.
+
+**Packaging:**
+- Tauri produces `.deb`/`.rpm`/`.AppImage` on Linux, `.app`/`.dmg` on
+  macOS, `.msi`/`.exe` on Windows. Each is a single binary plus the
+  bundled webview.
+- The `soundworm-ui` crate is **not** part of the default workspace
+  build — it pulls in webkit2gtk-4.1-devel on Fedora and adds minutes
+  to CI. Build with `cargo build -p soundworm-ui` explicitly, or via
+  the Tauri CLI (`cargo tauri dev`). CI gets a separate, optional job.
+
+**Risks:**
+- Webview footprint on Linux (webkit2gtk) — acceptable; same cost as
+  every other Tauri app.
+- IPC backpressure: a busy graph could flood the `Subscribe` stream
+  faster than the webview can render. The daemon already bounds the
+  per-connection queue (§6 of `docs/IPC.md`), so the UI just needs to
+  coalesce updates per animation frame.
+- Schema drift between `soundworm-core` types and the UI's TypeScript
+  view models. Mitigation: generate TS types from the Rust types with
+  `ts-rs` or `specta`, gated behind a UI-only feature flag.
 
 ### Risks & open questions
 

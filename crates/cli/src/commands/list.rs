@@ -15,7 +15,10 @@ pub async fn run(in_process: bool) -> Result<()> {
     } else {
         let mut c = Client::connect(&default_socket_path()).await?;
         match c.request(Op::ListNodes).await? {
-            ResponseData::Nodes { nodes } => nodes,
+            // Daemon now returns NodeView (Node + embedded ports); the
+            // CLI table only renders the Node fields, so project away
+            // the ports here.
+            ResponseData::Nodes { nodes } => nodes.into_iter().map(|nv| nv.node).collect(),
             _ => return Err(anyhow!("unexpected response from daemon")),
         }
     };

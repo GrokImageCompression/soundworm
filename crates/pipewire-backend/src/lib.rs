@@ -110,6 +110,18 @@ fn pw_thread(
     // the Profiler POD path. Catches JACK clients.
     let last_xrun_count: Rc<RefCell<HashMap<u32, u64>>> =
         Rc::new(RefCell::new(HashMap::new()));
+    // Port id → owning node id. Populated as Port globals arrive so
+    // PwCmd::CreateLink can pass valid node ids to PipeWire's link
+    // factory (which silently no-ops when node ids are 0).
+    let port_to_node: Rc<RefCell<HashMap<u32, u32>>> =
+        Rc::new(RefCell::new(HashMap::new()));
+    // Track the kind of each global so global_remove can emit the
+    // right BackendEvent variant. PipeWire's global_remove only gives
+    // an id, not a type.
+    #[derive(Copy, Clone)]
+    enum GlobalKind { Node, Port, Link }
+    let global_kinds: Rc<RefCell<HashMap<u32, GlobalKind>>> =
+        Rc::new(RefCell::new(HashMap::new()));
 
     // Handle commands from the outside world.
     let loop_ = mainloop.loop_();
@@ -117,6 +129,7 @@ fn pw_thread(
     let core_for_cmd = core.clone();
     let _live_proxies_for_cmd = live_proxies.clone();
     let live_links_for_cmd = live_links.clone();
+    let port_to_node_for_cmd = port_to_node.clone();
     // Track link factory name.
     let factory_name: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let factory_name_cmd = factory_name.clone();
@@ -124,19 +137,57 @@ fn pw_thread(
     let _cmd_attached = cmd_rx.attach(loop_, move |cmd| match cmd {
         PwCmd::Quit => mainloop_for_cmd.quit(),
         PwCmd::CreateLink { output_port, input_port, output_node, input_node } => {
+            tracing::info!(
+                output_port, input_port, output_node, input_node,
+                p2n_size = port_to_node_for_cmd.borrow().len(),
+                "PipeWire: PwCmd::CreateLink received in loop"
+            );
+            // The daemon passes node hints of 0 because the Link wire
+            // type carries only port ids. Look the real node ids up
+            // from the registry-fed port→node map. Without valid node
+            // ids PW's link-factory silently fails to register the
+            // new link in the global registry, so no LinkAppeared
+            // event ever fires.
+            let resolved = {
+                let p2n = port_to_node_for_cmd.borrow();
+                resolve_link_endpoints(
+                    &p2n, output_port, input_port, output_node, input_node,
+                )
+            };
+            let (resolved_out, resolved_in) = match resolved {
+                Some(pair) => pair,
+                None => {
+                    tracing::warn!(
+                        output_port, input_port,
+                        p2n_has_out = port_to_node_for_cmd.borrow().contains_key(&output_port),
+                        p2n_has_in  = port_to_node_for_cmd.borrow().contains_key(&input_port),
+                        "PipeWire: create_link skipped — unknown owning node for port(s)"
+                    );
+                    return;
+                }
+            };
+            tracing::info!(
+                output_port, input_port, resolved_out, resolved_in,
+                factory = ?factory_name_cmd.borrow().as_deref(),
+                "PipeWire: calling create_object"
+            );
             if let Some(factory) = factory_name_cmd.borrow().as_deref() {
                 match core_for_cmd.create_object::<pw::link::Link>(
                     factory,
                     &pw::properties::properties! {
                         "link.output.port" => output_port.to_string(),
                         "link.input.port"  => input_port.to_string(),
-                        "link.output.node" => output_node.to_string(),
-                        "link.input.node"  => input_node.to_string(),
+                        "link.output.node" => resolved_out.to_string(),
+                        "link.input.node"  => resolved_in.to_string(),
                         "object.linger"    => "1"
                     },
                 ) {
                     Ok(link) => {
                         let pid = link.upcast_ref().id();
+                        tracing::info!(
+                            proxy_id = pid,
+                            "PipeWire: create_object Ok — link proxy stored"
+                        );
                         live_links_for_cmd.borrow_mut().insert(pid, link);
                     }
                     Err(e) => tracing::error!("PipeWire: create_link failed: {}", e),
@@ -160,6 +211,10 @@ fn pw_thread(
     let last_latency_for_reg = last_latency_ms.clone();
     let last_xrun_for_reg = last_xrun_count.clone();
     let factory_for_reg = factory_name.clone();
+    let port_to_node_for_reg = port_to_node.clone();
+    let port_to_node_for_remove = port_to_node.clone();
+    let global_kinds_for_reg = global_kinds.clone();
+    let global_kinds_for_remove = global_kinds.clone();
     let sinks_remove = sinks.clone();
 
     let _reg_listener = registry
@@ -203,6 +258,9 @@ fn pw_thread(
                         properties: HashMap::new(),
                     };
                     nodes.lock().unwrap().insert(global.id, node.clone());
+                    global_kinds_for_reg
+                        .borrow_mut()
+                        .insert(global.id, GlobalKind::Node);
                     broadcast(&sinks, BackendEvent::NodeAppeared(node));
 
                     let node_proxy: pw::node::Node = reg.bind(global).unwrap();
@@ -290,6 +348,12 @@ fn pw_thread(
                         direction,
                         channels: 1,
                     };
+                    port_to_node_for_reg
+                        .borrow_mut()
+                        .insert(global.id, node_id as u32);
+                    global_kinds_for_reg
+                        .borrow_mut()
+                        .insert(global.id, GlobalKind::Port);
                     broadcast(&sinks, BackendEvent::PortAppeared(port));
 
                     let port_proxy: pw::port::Port = reg.bind(global).unwrap();
@@ -307,13 +371,43 @@ fn pw_thread(
                         sink_port: PortId(dst),
                         latency_compensation_ms: 0.0,
                     };
+                    global_kinds_for_reg
+                        .borrow_mut()
+                        .insert(global.id, GlobalKind::Link);
                     broadcast(&sinks, BackendEvent::LinkAppeared(link));
                 }
                 _ => {}
             }
         })
         .global_remove(move |id| {
-            broadcast(&sinks_remove, BackendEvent::NodeRemoved(NodeId(id as u64)));
+            // Dispatch on the kind we recorded when the global appeared.
+            // Before the fix this branch always fired NodeRemoved, even
+            // for Port and Link removals — confusing the daemon's graph.
+            let kind = global_kinds_for_remove.borrow_mut().remove(&id);
+            match kind {
+                Some(GlobalKind::Node) => {
+                    broadcast(
+                        &sinks_remove,
+                        BackendEvent::NodeRemoved(NodeId(id as u64)),
+                    );
+                }
+                Some(GlobalKind::Port) => {
+                    port_to_node_for_remove.borrow_mut().remove(&id);
+                    broadcast(
+                        &sinks_remove,
+                        BackendEvent::PortRemoved(PortId(id as u64)),
+                    );
+                }
+                Some(GlobalKind::Link) => {
+                    broadcast(
+                        &sinks_remove,
+                        BackendEvent::LinkRemoved(
+                            soundworm_core::link::LinkId(id as u64),
+                        ),
+                    );
+                }
+                None => {}
+            }
         })
         .register();
 
@@ -335,6 +429,34 @@ fn pw_thread(
 
     // Run the main loop indefinitely, handling events.
     mainloop.run();
+}
+
+/// Resolve PipeWire link endpoints: caller may have node hints (non-zero)
+/// or zeros to fall back on the port→node map. Returns the (output_node,
+/// input_node) pair to pass to the link-factory, or `None` if either
+/// endpoint can't be resolved. Pure function so it can be unit tested
+/// without spinning up a real PipeWire main loop.
+fn resolve_link_endpoints(
+    port_to_node: &HashMap<u32, u32>,
+    output_port: u32,
+    input_port: u32,
+    output_node_hint: u32,
+    input_node_hint: u32,
+) -> Option<(u32, u32)> {
+    let resolved_out = if output_node_hint != 0 {
+        output_node_hint
+    } else {
+        port_to_node.get(&output_port).copied().unwrap_or(0)
+    };
+    let resolved_in = if input_node_hint != 0 {
+        input_node_hint
+    } else {
+        port_to_node.get(&input_port).copied().unwrap_or(0)
+    };
+    if resolved_out == 0 || resolved_in == 0 {
+        return None;
+    }
+    Some((resolved_out, resolved_in))
 }
 
 /// Parse PipeWire's `node.latency` prop, formatted `"samples/rate"`,
@@ -365,6 +487,54 @@ mod tests {
         assert!(parse_latency_ms("1024/0").is_none());
         assert!(parse_latency_ms("abc/48000").is_none());
     }
+
+    #[test]
+    fn resolves_endpoints_from_port_to_node_map() {
+        let mut p2n = HashMap::new();
+        p2n.insert(100, 10);  // port 100 belongs to node 10
+        p2n.insert(200, 20);  // port 200 belongs to node 20
+
+        let (out_node, in_node) =
+            resolve_link_endpoints(&p2n, 100, 200, 0, 0).expect("should resolve");
+        assert_eq!(out_node, 10);
+        assert_eq!(in_node, 20);
+    }
+
+    #[test]
+    fn resolve_endpoints_honors_explicit_hints() {
+        let mut p2n = HashMap::new();
+        p2n.insert(100, 10);
+        // Caller-supplied non-zero hints win over the map lookup.
+        let (out_node, in_node) =
+            resolve_link_endpoints(&p2n, 100, 200, 999, 888).expect("should resolve");
+        assert_eq!(out_node, 999);
+        assert_eq!(in_node, 888);
+    }
+
+    #[test]
+    fn resolve_endpoints_returns_none_for_unknown_port() {
+        let p2n: HashMap<u32, u32> = HashMap::new();
+        // Both ports unknown and no hints given.
+        assert!(resolve_link_endpoints(&p2n, 100, 200, 0, 0).is_none());
+    }
+
+    #[test]
+    fn resolve_endpoints_returns_none_when_only_one_resolves() {
+        let mut p2n = HashMap::new();
+        p2n.insert(100, 10);
+        // Input port is unknown — PW's factory would silently fail
+        // to register the link, so we'd rather catch it here.
+        assert!(resolve_link_endpoints(&p2n, 100, 999, 0, 0).is_none());
+    }
+
+    #[test]
+    fn resolve_endpoints_treats_zero_node_id_as_invalid() {
+        let mut p2n = HashMap::new();
+        // Port 100 maps to node id 0 — unusable as a PW node ref.
+        p2n.insert(100, 0);
+        p2n.insert(200, 20);
+        assert!(resolve_link_endpoints(&p2n, 100, 200, 0, 0).is_none());
+    }
 }
 
 fn media_class_to_kind(mc: &str) -> NodeKind {
@@ -390,7 +560,9 @@ impl AudioBackend for PipeWireBackend {
     async fn create_link(&self, link: &Link) -> Result<()> {
         let output_port = link.source_port.0 as u32;
         let input_port  = link.sink_port.0 as u32;
-        // node IDs aren't in Link; pass 0 — PW can resolve via port IDs
+        tracing::info!(output_port, input_port, "PipeWire: queue CreateLink");
+        // node IDs aren't in Link; pass 0 — the PW thread resolves
+        // them from its port→node map. See resolve_link_endpoints.
         self.cmd_tx.send(PwCmd::CreateLink {
             output_port, input_port, output_node: 0, input_node: 0,
         }).map_err(|_| SoundwormError::Backend("PW thread closed".into()))

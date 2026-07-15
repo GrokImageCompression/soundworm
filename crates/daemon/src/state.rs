@@ -358,23 +358,53 @@ pub fn event_kind(e: &IpcEvent) -> &'static str {
 /// Resolve a `PortRef` to a concrete `PortId` against the live graph.
 /// `dir` is the direction we expect — for `Link.source` that's Output,
 /// for `Link.sink` that's Input. Named refs pick the first matching port.
+///
+/// `require_kind` constrains which media kind the owning node must
+/// have (Audio/Midi/Video/Other). PipeWire's link factory silently
+/// accepts then destroys cross-kind links, so we'd rather refuse them
+/// up front than fail invisibly later.
 pub fn resolve_port(
     graph: &AudioGraph,
     r: &PortRef,
     dir: Direction,
+    require_kind: Option<soundworm_core::node::MediaKind>,
 ) -> Result<soundworm_core::port::PortId, ProtoError> {
     match r {
         PortRef::Id(id) => {
-            if graph.get_port(id).is_some() {
-                Ok(id.clone())
-            } else {
-                Err(err(ErrorCode::NotFound, &format!("port {} unknown", id.0)))
+            let p = graph
+                .get_port(id)
+                .ok_or_else(|| err(ErrorCode::NotFound, &format!("port {} unknown", id.0)))?;
+            if let Some(want) = require_kind {
+                let owner = graph.get_node(&p.node_id).ok_or_else(|| {
+                    err(ErrorCode::NotFound, &format!("owner node for port {} unknown", id.0))
+                })?;
+                if owner.media_kind() != want {
+                    return Err(err(
+                        ErrorCode::BadRequest,
+                        &format!(
+                            "port {} is {:?}, sink expects {:?}",
+                            id.0, owner.media_kind(), want,
+                        ),
+                    ));
+                }
             }
+            Ok(id.clone())
         }
         PortRef::Named { node, port: _ } => {
             let n = graph
                 .find_node_by_name(node)
                 .ok_or_else(|| err(ErrorCode::NotFound, &format!("node '{node}' not found")))?;
+            if let Some(want) = require_kind {
+                if n.media_kind() != want {
+                    return Err(err(
+                        ErrorCode::BadRequest,
+                        &format!(
+                            "node '{node}' is {:?}, peer expects {:?}",
+                            n.media_kind(), want,
+                        ),
+                    ));
+                }
+            }
             let ports = match dir {
                 Direction::Output => graph.output_ports_of(&n.id),
                 Direction::Input => graph.input_ports_of(&n.id),

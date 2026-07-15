@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>soundworm</title>
+    <!-- Paint the surface dark before any JS / CSS loads so the
+         webview doesn't flash white between window-create and app-
+         mount. Tauri's backgroundColor handles the native window
+         underneath; this handles the HTML chrome above it. -->
+    <style>
+      html, body { margin: 0; background: #1a1d21; color: #d6dae0; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

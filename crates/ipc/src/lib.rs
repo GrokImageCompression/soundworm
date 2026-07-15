@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use soundworm_core::{
     link::{Link, LinkId},
     node::{Node, NodeId},
-    port::PortId,
+    port::{Port, PortId},
 };
 
 pub const PROTO_VERSION: u32 = 1;
@@ -54,6 +54,7 @@ pub struct Request {
 pub enum Op {
     Hello { client: String, version: String },
     ListNodes,
+    ListPorts,
     ListLinks,
     Link { source: PortRef, sink: PortRef },
     Unlink { link_id: LinkId },
@@ -97,7 +98,8 @@ pub struct Response {
 #[serde(untagged)]
 pub enum ResponseData {
     Hello { daemon_version: String, proto: u32 },
-    Nodes { nodes: Vec<Node> },
+    Nodes { nodes: Vec<NodeView> },
+    Ports { ports: Vec<Port> },
     Links { links: Vec<Link> },
     Link { link_id: LinkId },
     Rules { rule_count: usize },
@@ -106,6 +108,22 @@ pub enum ResponseData {
     Restore { applied: usize, skipped: usize },
     Metrics { metrics: MetricsPayload },
     Empty {},
+}
+
+/// `ListNodes` wire payload. Inlines the node's ports so the UI only
+/// needs one round-trip to draw the graph and so port→node mapping is
+/// already established without a join. `ListPorts` is still available
+/// for callers that just want the flat port list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodeView {
+    // Nested rather than flattened: #[serde(flatten)] inside an
+    // #[serde(untagged)] enum variant (ResponseData::Nodes) is a known
+    // serde footgun — the flatten path requires direct deserializer
+    // access that untagged's Content buffer can't provide, so the
+    // Nodes variant fails to match and Empty {} silently wins.
+    pub node: Node,
+    #[serde(default)]
+    pub ports: Vec<Port>,
 }
 
 /// Wire shape mirrors `soundworm_observability::MetricsSnapshot` but
@@ -185,6 +203,89 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    // Regression: `#[serde(flatten)]` inside a `#[serde(untagged)]`
+    // variant doesn't work — serde's untagged code path uses a Content
+    // buffer that the flatten path can't consume from, so the
+    // ResponseData::Nodes arm silently fails to match and Empty {}
+    // wins. We hit this in v0.5-ui and the UI showed "unexpected
+    // response: Empty" for every ListNodes call. NodeView is now
+    // nested, not flattened; this test pins that decision.
+    #[test]
+    fn list_nodes_response_round_trips_with_embedded_ports() {
+        use soundworm_core::{
+            node::{Node, NodeId, NodeKind},
+            port::{Direction, Port, PortId},
+        };
+        use std::collections::HashMap;
+
+        let n = Node {
+            id: NodeId(7),
+            name: "alsa_output.default".into(),
+            kind: NodeKind::Sink,
+            app_name: None,
+            media_class: "Audio/Sink".into(),
+            sample_rate: 48000,
+            channels: 2,
+            latency_ms: 0.0,
+            properties: HashMap::new(),
+        };
+        let p = Port {
+            id: PortId(42),
+            node_id: NodeId(7),
+            name: "playback_FL".into(),
+            direction: Direction::Input,
+            channels: 1,
+        };
+        let resp = Message::Response(Response {
+            id: 9,
+            ok: true,
+            data: Some(ResponseData::Nodes {
+                nodes: vec![NodeView { node: n.clone(), ports: vec![p.clone()] }],
+            }),
+            error: None,
+        });
+
+        // Serialize and deserialize end-to-end through the wire format.
+        let line = serde_json::to_string(&resp).expect("serialize");
+        let back: Message = serde_json::from_str(&line).expect("deserialize");
+
+        let data = match back {
+            Message::Response(r) => r.data.expect("data present"),
+            _ => panic!("not a Response"),
+        };
+        match data {
+            ResponseData::Nodes { nodes } => {
+                assert_eq!(nodes.len(), 1, "node count");
+                assert_eq!(nodes[0].node.id, NodeId(7));
+                assert_eq!(nodes[0].ports.len(), 1, "ports embedded");
+                assert_eq!(nodes[0].ports[0].id, PortId(42));
+            }
+            other => panic!("variant mismatch: {other:?} — flatten+untagged regression"),
+        }
+    }
+
+    /// An older daemon (or a node with no ports yet) sends nodes
+    /// without the `ports` field. New IPC clients must still parse
+    /// these into NodeView with an empty ports vec.
+    #[test]
+    fn node_view_accepts_missing_ports_field() {
+        let raw = r#"{
+            "node": {
+                "id": 1,
+                "name": "test",
+                "kind": "Source",
+                "app_name": null,
+                "media_class": "Audio/Source",
+                "sample_rate": 48000,
+                "channels": 2,
+                "latency_ms": 0.0,
+                "properties": {}
+            }
+        }"#;
+        let nv: NodeView = serde_json::from_str(raw).expect("parse without ports");
+        assert!(nv.ports.is_empty());
     }
 
     #[test]
