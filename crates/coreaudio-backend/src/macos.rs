@@ -33,13 +33,133 @@
 //!           device_id,
 //!           kAudioDevicePropertyVolumeScalar)
 
+use coreaudio_sys::{
+    kAudioDevicePropertyDeviceName, kAudioDevicePropertyNominalSampleRate,
+    kAudioDevicePropertyStreams, kAudioHardwarePropertyDefaultOutputDevice,
+    kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal,
+    kAudioObjectPropertyScopeInput, kAudioObjectPropertyScopeOutput,
+    kAudioObjectSystemObject, AudioDeviceID, AudioObjectGetPropertyData,
+    AudioObjectGetPropertyDataSize, AudioObjectID, AudioObjectPropertyAddress,
+    AudioObjectSetPropertyData, AudioStreamID,
+};
 use soundworm_core::{
     error::{Result, SoundwormError},
     event::BackendEvent,
     node::{Node, NodeId, NodeKind},
 };
 use std::collections::HashMap;
+use std::os::raw::c_void;
 use std::sync::{mpsc, Arc, Mutex};
+use std::{mem, ptr};
+
+// Master/Main both equal 0; hardcoding sidesteps the constant rename
+// across macOS SDK versions that coreaudio-sys bindgen tracks.
+const ELEMENT_MAIN: u32 = 0;
+
+fn address(selector: u32, scope: u32) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress { mSelector: selector, mScope: scope, mElement: ELEMENT_MAIN }
+}
+
+/// Byte size the HAL reports for a property, or None on error.
+unsafe fn property_size(obj: AudioObjectID, addr: &AudioObjectPropertyAddress) -> Option<usize> {
+    let mut size: u32 = 0;
+    let st = AudioObjectGetPropertyDataSize(obj, addr, 0, ptr::null(), &mut size);
+    (st == 0).then_some(size as usize)
+}
+
+/// Read a property whose payload is a packed array of `u32`-sized ids
+/// (device ids, stream ids). Returns empty on any HAL error.
+unsafe fn read_u32_array(obj: AudioObjectID, addr: &AudioObjectPropertyAddress) -> Vec<u32> {
+    let Some(size) = property_size(obj, addr) else { return Vec::new() };
+    let count = size / mem::size_of::<u32>();
+    if count == 0 {
+        return Vec::new();
+    }
+    let mut buf = vec![0u32; count];
+    let mut io = size as u32;
+    let st = AudioObjectGetPropertyData(
+        obj, addr, 0, ptr::null(), &mut io, buf.as_mut_ptr() as *mut c_void,
+    );
+    if st != 0 {
+        return Vec::new();
+    }
+    buf.truncate(io as usize / mem::size_of::<u32>());
+    buf
+}
+
+unsafe fn stream_count(dev: AudioDeviceID, scope: u32) -> usize {
+    let addr = address(kAudioDevicePropertyStreams, scope);
+    property_size(dev, &addr)
+        .map(|s| s / mem::size_of::<AudioStreamID>())
+        .unwrap_or(0)
+}
+
+unsafe fn device_name(dev: AudioDeviceID) -> String {
+    let addr = address(kAudioDevicePropertyDeviceName, kAudioObjectPropertyScopeGlobal);
+    let Some(size) = property_size(dev, &addr) else { return String::new() };
+    let mut buf = vec![0u8; size];
+    let mut io = size as u32;
+    let st = AudioObjectGetPropertyData(
+        dev, &addr, 0, ptr::null(), &mut io, buf.as_mut_ptr() as *mut c_void,
+    );
+    if st != 0 {
+        return String::new();
+    }
+    match std::ffi::CStr::from_bytes_until_nul(&buf) {
+        Ok(c) => c.to_string_lossy().into_owned(),
+        Err(_) => String::new(),
+    }
+}
+
+unsafe fn nominal_sample_rate(dev: AudioDeviceID) -> u32 {
+    let addr = address(kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal);
+    let mut sr: f64 = 0.0;
+    let mut io = mem::size_of::<f64>() as u32;
+    let st = AudioObjectGetPropertyData(
+        dev, &addr, 0, ptr::null(), &mut io, &mut sr as *mut f64 as *mut c_void,
+    );
+    if st == 0 && sr > 0.0 {
+        sr as u32
+    } else {
+        48000
+    }
+}
+
+/// Enumerate the HAL device list into cross-platform `Node`s. A device
+/// with output streams is a Sink, with input streams a Source; devices
+/// with neither (aggregate control-only) are skipped.
+fn hal_devices() -> Vec<Node> {
+    unsafe {
+        let sys = kAudioObjectSystemObject as AudioObjectID;
+        let addr = address(kAudioHardwarePropertyDevices, kAudioObjectPropertyScopeGlobal);
+        let devices = read_u32_array(sys, &addr);
+        devices
+            .into_iter()
+            .filter_map(|dev| {
+                let outputs = stream_count(dev, kAudioObjectPropertyScopeOutput);
+                let inputs = stream_count(dev, kAudioObjectPropertyScopeInput);
+                let (kind, media_class) = if outputs > 0 {
+                    (NodeKind::Sink, "Audio/Sink")
+                } else if inputs > 0 {
+                    (NodeKind::Source, "Audio/Source")
+                } else {
+                    return None;
+                };
+                Some(Node {
+                    id: device_id_to_node_id(dev),
+                    name: device_name(dev),
+                    kind,
+                    app_name: None,
+                    media_class: media_class.into(),
+                    sample_rate: nominal_sample_rate(dev),
+                    channels: 2,
+                    latency_ms: 0.0,
+                    properties: HashMap::new(),
+                })
+            })
+            .collect()
+    }
+}
 
 /// `AudioDeviceID` is a `u32` in CoreAudio. We widen to `u64` for
 /// `NodeId` to match the cross-platform graph schema; the inverse
@@ -55,32 +175,16 @@ pub(crate) fn node_id_to_device_id(id: u64) -> std::result::Result<u32, Soundwor
 }
 
 pub(crate) struct Inner {
-    nodes: Arc<Mutex<HashMap<u32, Node>>>,
     event_sinks: Arc<Mutex<Vec<mpsc::SyncSender<BackendEvent>>>>,
 }
 
 impl Inner {
     pub fn start() -> Result<Self> {
-        let nodes = Arc::new(Mutex::new(HashMap::new()));
-        let event_sinks: Arc<Mutex<Vec<mpsc::SyncSender<BackendEvent>>>> =
-            Arc::new(Mutex::new(Vec::new()));
-
-        // TODO(v0.5-mac): spawn the HAL listener thread that:
-        //   1. Calls hal_devices() for the initial snapshot
-        //   2. Inserts each Node into `nodes` and broadcasts NodeAppeared
-        //   3. Registers an AudioObjectPropertyListener for
-        //      kAudioHardwarePropertyDevices and re-syncs on change
-        //   4. Runs CFRunLoopRun() to keep the listener alive
-        //
-        // Mirror the pipewire-backend layout: dedicated non-tokio
-        // thread, std::sync::mpsc for events out, no shared mutable
-        // state besides `nodes` + `event_sinks` (already Arc<Mutex<…>>).
-        tracing::warn!(
-            "coreaudio backend: HAL hookup is stubbed — \
-             enumerate_nodes will return empty until v0.5 is finished"
-        );
-
-        Ok(Self { nodes, event_sinks })
+        // TODO(v0.5-mac): spawn a HAL listener thread (CFRunLoopRun +
+        // AudioObjectAddPropertyListener on kAudioHardwarePropertyDevices)
+        // to broadcast live NodeAppeared/NodeRemoved. enumerate_nodes
+        // already queries the HAL directly, so listing works without it.
+        Ok(Self { event_sinks: Arc::new(Mutex::new(Vec::new())) })
     }
 
     pub fn subscribe(&self) -> mpsc::Receiver<BackendEvent> {
@@ -90,17 +194,32 @@ impl Inner {
     }
 
     pub fn enumerate_nodes(&self) -> Result<Vec<Node>> {
-        Ok(self.nodes.lock().unwrap().values().cloned().collect())
+        Ok(hal_devices())
     }
 
+    /// CoreAudio has no port-to-port linking, so "route to this sink"
+    /// means make it the system default output device.
     pub fn set_default_output(&self, node_id: u64) -> Result<()> {
-        let dev = node_id_to_device_id(node_id)?;
-        // TODO(v0.5-mac): AudioObjectSetPropertyData(
-        //     kAudioObjectSystemObject,
-        //     kAudioHardwarePropertyDefaultOutputDevice,
-        //     &dev as *const _ as *const _,
-        //     size_of::<AudioDeviceID>())
-        tracing::info!("coreaudio set_default_output device={dev} (stub)");
+        let mut dev = node_id_to_device_id(node_id)?;
+        let addr = address(
+            kAudioHardwarePropertyDefaultOutputDevice,
+            kAudioObjectPropertyScopeGlobal,
+        );
+        let st = unsafe {
+            AudioObjectSetPropertyData(
+                kAudioObjectSystemObject as AudioObjectID,
+                &addr,
+                0,
+                ptr::null(),
+                mem::size_of::<AudioDeviceID>() as u32,
+                &mut dev as *mut AudioDeviceID as *const c_void,
+            )
+        };
+        if st != 0 {
+            return Err(SoundwormError::Backend(format!(
+                "set default output device {dev} failed: OSStatus {st}"
+            )));
+        }
         Ok(())
     }
 
@@ -112,27 +231,6 @@ impl Inner {
         // on each. Some devices only expose master volume.
         tracing::info!("coreaudio set_volume device={dev} volume={v} (stub)");
         Ok(())
-    }
-}
-
-/// Build a [`Node`] from a CoreAudio `AudioDeviceID`. Filled in once
-/// the HAL bindings are wired up; for now returns a minimal Node so
-/// the type plumbing compiles.
-#[allow(dead_code)]
-pub(crate) fn node_from_device(dev: u32, name: &str, kind: NodeKind) -> Node {
-    Node {
-        id: device_id_to_node_id(dev),
-        name: name.into(),
-        kind,
-        app_name: None,
-        media_class: String::new(),
-        // TODO(v0.5-mac): query kAudioDevicePropertyNominalSampleRate,
-        // kAudioDevicePropertyStreams[Input/Output] → channel count,
-        // kAudioDevicePropertyLatency → latency_ms.
-        sample_rate: 48000,
-        channels: 2,
-        latency_ms: 0.0,
-        properties: HashMap::new(),
     }
 }
 
