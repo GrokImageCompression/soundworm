@@ -31,7 +31,7 @@ use soundworm_core::{
     port::{Port, PortId},
 };
 
-pub const PROTO_VERSION: u32 = 1;
+pub const PROTO_VERSION: u32 = 2;
 
 /// Top-level frame. `type` is the discriminator on the wire.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,8 +94,13 @@ pub struct Response {
     pub error: Option<ProtoError>,
 }
 
+/// Internally tagged on `resp`. Tagging (not untagged) is deliberate:
+/// several variants share a shape (Script/Snapshot are both `{path}`,
+/// Rules/Restore are numeric), and under `#[serde(untagged)]` serde
+/// picks the first structurally-matching variant, so those silently
+/// mis-parsed. The tag makes every variant unambiguous by construction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "resp")]
 pub enum ResponseData {
     Hello { daemon_version: String, proto: u32 },
     Nodes { nodes: Vec<NodeView> },
@@ -104,14 +109,7 @@ pub enum ResponseData {
     Link { link_id: LinkId },
     Rules { rule_count: usize },
     Script { path: String },
-    // Distinct JSON key from Script's `path`: in an untagged enum serde
-    // picks the first structurally-matching variant, so an identical
-    // `{path}` shape would always deserialize as Script and never reach
-    // Snapshot (same footgun documented on NodeView).
-    Snapshot {
-        #[serde(rename = "snapshot_path")]
-        path: String,
-    },
+    Snapshot { path: String },
     Restore { applied: usize, skipped: usize },
     Metrics { metrics: MetricsPayload },
     Empty {},
@@ -123,11 +121,10 @@ pub enum ResponseData {
 /// for callers that just want the flat port list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeView {
-    // Nested rather than flattened: #[serde(flatten)] inside an
-    // #[serde(untagged)] enum variant (ResponseData::Nodes) is a known
-    // serde footgun — the flatten path requires direct deserializer
-    // access that untagged's Content buffer can't provide, so the
-    // Nodes variant fails to match and Empty {} silently wins.
+    // Nested rather than #[serde(flatten)]: flatten interacts badly with
+    // serde's Content buffering (it needs direct deserializer access),
+    // so keeping node as its own field sidesteps that regardless of how
+    // the enclosing ResponseData is tagged.
     pub node: Node,
     #[serde(default)]
     pub ports: Vec<Port>,
@@ -212,13 +209,10 @@ mod tests {
         }
     }
 
-    // Regression: `#[serde(flatten)]` inside a `#[serde(untagged)]`
-    // variant doesn't work — serde's untagged code path uses a Content
-    // buffer that the flatten path can't consume from, so the
-    // ResponseData::Nodes arm silently fails to match and Empty {}
-    // wins. We hit this in v0.5-ui and the UI showed "unexpected
-    // response: Empty" for every ListNodes call. NodeView is now
-    // nested, not flattened; this test pins that decision.
+    // Regression: ListNodes must carry embedded ports through the wire.
+    // Originally broke because NodeView used #[serde(flatten)] inside an
+    // untagged ResponseData, which silently mis-parsed. NodeView is now
+    // nested and ResponseData is tagged; this pins both.
     #[test]
     fn list_nodes_response_round_trips_with_embedded_ports() {
         use soundworm_core::{
@@ -304,11 +298,10 @@ mod tests {
         assert!(matches!(named, PortRef::Named { .. }));
     }
 
-    // Regression: Script and Snapshot both carry a single path. In an
-    // untagged enum, identical shapes make the first variant (Script)
-    // always win, so a Snapshot response deserialized as Script and
-    // `sw snapshot save` / the UI reported "unexpected response". The
-    // snapshot_path rename keeps the two shapes distinct.
+    // Regression: Script and Snapshot both carry a single `path`. Under
+    // the old untagged ResponseData the first matching variant (Script)
+    // always won, so Snapshot mis-parsed and `sw snapshot save` / the UI
+    // reported "unexpected response". The `resp` tag disambiguates them.
     #[test]
     fn snapshot_response_does_not_collide_with_script() {
         let snap = serde_json::to_string(&ResponseData::Snapshot { path: "/x/s.json".into() })
@@ -324,5 +317,127 @@ mod tests {
             serde_json::from_str::<ResponseData>(&script).expect("deserialize"),
             ResponseData::Script { .. }
         ));
+    }
+
+    // --- protocol conformance -------------------------------------------
+    // Every wire enum must survive a JSON round-trip landing on the SAME
+    // variant. std::mem::discriminant compares variant identity without
+    // needing field equality, so these catch the whole mis-parse class
+    // (a colliding untagged variant, a dropped tag, a renamed field)
+    // regardless of which enum it happens in.
+
+    use std::mem::discriminant;
+
+    fn sample_node() -> Node {
+        use soundworm_core::node::{NodeId, NodeKind};
+        Node {
+            id: NodeId(1),
+            name: "n".into(),
+            kind: NodeKind::Sink,
+            app_name: None,
+            media_class: "Audio/Sink".into(),
+            sample_rate: 48000,
+            channels: 2,
+            latency_ms: 0.0,
+            properties: std::collections::HashMap::new(),
+        }
+    }
+    fn sample_port() -> Port {
+        use soundworm_core::{node::NodeId, port::Direction};
+        Port { id: PortId(2), node_id: NodeId(1), name: "p".into(), direction: Direction::Input, channels: 1 }
+    }
+    fn sample_link() -> Link {
+        Link { id: LinkId(3), source_port: PortId(2), sink_port: PortId(4), latency_compensation_ms: 0.0 }
+    }
+
+    fn roundtrips<T>(v: &T) -> bool
+    where
+        T: Serialize + for<'de> Deserialize<'de>,
+    {
+        let json = serde_json::to_string(v).expect("serialize");
+        let back: T = serde_json::from_str(&json).expect("deserialize");
+        discriminant(v) == discriminant(&back)
+    }
+
+    #[test]
+    fn every_response_variant_round_trips_to_same_variant() {
+        let metrics = MetricsPayload { nodes: vec![], xrun_total: 0, xrun_by_node: vec![] };
+        let all = vec![
+            ResponseData::Hello { daemon_version: "0".into(), proto: PROTO_VERSION },
+            ResponseData::Nodes { nodes: vec![NodeView { node: sample_node(), ports: vec![sample_port()] }] },
+            ResponseData::Ports { ports: vec![sample_port()] },
+            ResponseData::Links { links: vec![sample_link()] },
+            ResponseData::Link { link_id: LinkId(3) },
+            ResponseData::Rules { rule_count: 2 },
+            ResponseData::Script { path: "/s.rhai".into() },
+            ResponseData::Snapshot { path: "/s.json".into() },
+            ResponseData::Restore { applied: 1, skipped: 2 },
+            ResponseData::Metrics { metrics },
+            ResponseData::Empty {},
+        ];
+        // Guard against silently dropping a variant from coverage.
+        assert_eq!(all.len(), 11, "add new ResponseData variants here");
+        for v in &all {
+            assert!(roundtrips(v), "ResponseData variant mis-parsed: {v:?}");
+        }
+    }
+
+    #[test]
+    fn every_op_variant_round_trips_to_same_variant() {
+        let all = vec![
+            Op::Hello { client: "c".into(), version: "1".into() },
+            Op::ListNodes,
+            Op::ListPorts,
+            Op::ListLinks,
+            Op::Link { source: PortRef::Id(PortId(1)), sink: PortRef::Id(PortId(2)) },
+            Op::Unlink { link_id: LinkId(3) },
+            Op::Subscribe { filter: Some(EventFilter { kinds: Some(vec!["XrunObserved".into()]) }) },
+            Op::Unsubscribe,
+            Op::LoadRules { path: "/r.toml".into() },
+            Op::ReloadRules,
+            Op::LoadScript { path: "/r.rhai".into() },
+            Op::ReloadScript,
+            Op::GetMetrics,
+            Op::Snapshot { name: "s".into() },
+            Op::Restore { name: "s".into() },
+            Op::Shutdown,
+        ];
+        assert_eq!(all.len(), 16, "add new Op variants here");
+        for op in &all {
+            // Round-trip through the framed Request so the flattened tag
+            // is exercised the way the wire actually carries it.
+            let msg = Message::Request(Request { id: 1, op: op.clone() });
+            let json = serde_json::to_string(&msg).expect("serialize");
+            let back: Message = serde_json::from_str(&json).expect("deserialize");
+            match back {
+                Message::Request(r) => assert!(
+                    discriminant(op) == discriminant(&r.op),
+                    "Op variant mis-parsed: {op:?}"
+                ),
+                _ => panic!("frame variant changed for {op:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn every_event_variant_round_trips_and_has_a_kind() {
+        use soundworm_core::node::NodeId;
+        let all = vec![
+            Event::NodeAppeared { node: sample_node() },
+            Event::NodeRemoved { node_id: NodeId(1) },
+            Event::LinkAppeared { link: sample_link() },
+            Event::LinkRemoved { link_id: LinkId(3) },
+            Event::RulesApplied { rule: "r".into(), link_id: LinkId(3) },
+            Event::LinkRejected { reason: "x".into() },
+            Event::EventsDropped { count: 5 },
+            Event::XrunObserved { node_id: NodeId(1), gap_ms: 1.5 },
+        ];
+        assert_eq!(all.len(), 8, "add new Event variants here");
+        for ev in &all {
+            assert!(roundtrips(ev), "Event variant mis-parsed: {ev:?}");
+            // The "kind" tag must be present for subscribers to filter on.
+            let json = serde_json::to_string(ev).unwrap();
+            assert!(json.contains("\"kind\""), "event missing kind tag: {json}");
+        }
     }
 }
