@@ -14,6 +14,11 @@ export const createLink = (sourceNode, targetNode) =>
 export const deleteLink = (linkId) =>
   invoke("delete_link", { linkId });
 
+// Canvas node positions, keyed by node name, persisted to
+// $XDG_DATA_HOME/soundworm/ui-layout.json by the Rust side.
+export const loadLayout = () => invoke("load_layout");
+export const saveLayout = (positions) => invoke("save_layout", { positions });
+
 export function onSwdEvent(handler) {
   return listen("swd-event", (msg) => handler(msg.payload));
 }

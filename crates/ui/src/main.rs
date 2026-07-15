@@ -1,6 +1,7 @@
 //! Tauri shell for soundworm. Talks to `swd` over the existing NDJSON
-//! IPC socket via `soundworm-ipc`. v0.1 of the UI: list nodes + links,
-//! stream live events to the webview. Graph canvas comes later.
+//! IPC socket via `soundworm-ipc`. Exposes the list/link ops as Tauri
+//! commands and streams live `swd` events to the webview, which renders
+//! the node-graph canvas.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -57,6 +58,39 @@ async fn list_links(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value
 #[tauri::command]
 async fn socket_path() -> String {
     default_socket_path().display().to_string()
+}
+
+// Mirrors soundworm_snapshots::snapshot_dir's XDG convention. Not shared
+// via that crate: the UI is deliberately decoupled from the daemon-side
+// workspace, and the layout file is a UI-only concern the daemon never
+// reads.
+fn layout_path() -> std::path::PathBuf {
+    let base = std::env::var("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            std::path::PathBuf::from(home).join(".local/share")
+        });
+    base.join("soundworm/ui-layout.json")
+}
+
+#[tauri::command]
+async fn load_layout() -> Result<serde_json::Value, String> {
+    match std::fs::read_to_string(layout_path()) {
+        Ok(s) => serde_json::from_str(&s).map_err(|e| e.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(serde_json::json!({})),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn save_layout(positions: serde_json::Value) -> Result<(), String> {
+    let path = layout_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let s = serde_json::to_string(&positions).map_err(|e| e.to_string())?;
+    std::fs::write(&path, s).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -150,7 +184,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             list_nodes, list_ports, list_links, socket_path,
-            create_link, delete_link,
+            create_link, delete_link, load_layout, save_layout,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch soundworm-ui");

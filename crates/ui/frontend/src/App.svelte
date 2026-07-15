@@ -6,7 +6,7 @@
   import { Position } from "@xyflow/svelte";
   import {
     listNodes, listLinks, socketPath, onSwdEvent,
-    createLink, deleteLink,
+    createLink, deleteLink, loadLayout, saveLayout,
   } from "./swd.js";
   import { layoutNodes } from "./layout.js";
 
@@ -16,6 +16,7 @@
   let edges  = $state([]);
   let links  = $state([]);   // raw IPC links, shown in sidebar
   let events = $state([]);   // ring buffer of recent events
+  let savedLayout = $state({}); // node name → {x, y}, persisted to disk
 
   function nodeKind(media_class) {
     if (!media_class) return "unknown";
@@ -132,7 +133,7 @@
       // Ports come embedded inside each node now — flatten for the
       // port→node map used by buildEdges.
       const allPorts = rawNodes.flatMap((n) => n.ports ?? []);
-      nodes = layoutNodes(rawNodes.map(toFlowNode));
+      nodes = layoutNodes(rawNodes.map(toFlowNode), savedLayout);
       links = rawLinks;
       edges = buildEdges(rawLinks, allPorts);
       status = `connected — ${rawNodes.length} nodes, ${allPorts.length} ports, ${rawLinks.length} links`;
@@ -144,6 +145,21 @@
   function pushEvent(ev) {
     const ts = new Date().toLocaleTimeString();
     events = [{ ts, ...ev }, ...events].slice(0, 200);
+  }
+
+  // Persist current node positions on drag-stop. Merge into savedLayout
+  // so positions of nodes not currently present survive, and so the
+  // next event-driven refresh keeps the dragged position instead of
+  // snapping back to the heuristic column.
+  function persistLayout() {
+    const positions = { ...savedLayout };
+    for (const n of nodes) {
+      if (n.sw?.name && n.position) {
+        positions[n.sw.name] = { x: n.position.x, y: n.position.y };
+      }
+    }
+    savedLayout = positions;
+    saveLayout(positions).catch((e) => { status = `layout save failed: ${e}`; });
   }
 
   function nodeNameFor(id) {
@@ -242,6 +258,7 @@
 
   onMount(async () => {
     socket = await socketPath();
+    savedLayout = await loadLayout();
     await refresh();
     await onSwdEvent((ev) => {
       pushEvent(ev);
@@ -276,6 +293,7 @@
         isValidConnection={isValidConnection}
         onreconnect={onReconnect}
         onedgecontextmenu={onEdgeContextMenu}
+        onnodedragstop={persistLayout}
         proOptions={{ hideAttribution: true }}
       >
         <Background />

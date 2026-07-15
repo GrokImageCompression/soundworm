@@ -404,13 +404,17 @@ model (background service + thin UI).
   above is event-coverage and schema-freeze, not new endpoints.
 
 **UI roadmap (rough, not committed):**
-- **ui-v0.1** — connect to socket, list nodes/ports in a sidebar, list
-  links in a table. No graph yet. Live updates via `Subscribe`. Proves
-  the wiring end-to-end.
-- **ui-v0.2** — node-graph canvas. Nodes positioned heuristically
-  (sources left, sinks right, streams middle). Click-drag from output
-  port to input port issues `Link`; click on link deletes via `Unlink`.
-  Layout state persisted to `$XDG_DATA_HOME/soundworm/ui-layout.json`.
+- **ui-v0.1 (done)** — connect to socket, list nodes/ports in a sidebar,
+  list links. Live updates via `Subscribe`. Proved the wiring
+  end-to-end.
+- **ui-v0.2 (done)** — node-graph canvas. Nodes positioned heuristically
+  (sources left, sinks right, streams middle). Drag handle→handle issues
+  `Link`; drag an edge endpoint reconnects (delete + create); right-click
+  or select+Delete issues `Unlink`. Per-channel links collapse to one
+  visual edge. Cross-kind and same-direction drags gated before they
+  reach the daemon. Layout persistence to
+  `$XDG_DATA_HOME/soundworm/ui-layout.json` still TODO — layout is
+  recomputed each refresh.
 - **ui-v0.3** — session snapshot management UI: save/load/list using
   existing `Snapshot`/`Restore` ops.
 - **ui-v0.4** — metrics overlay: xrun badges on nodes, latency sparklines

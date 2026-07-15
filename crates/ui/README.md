@@ -1,14 +1,16 @@
 # soundworm-ui
 
-Tauri 2 desktop UI for soundworm. v0.1 scaffold — sidebar list of
-nodes/links plus a live event stream from `swd`. Loopback-style
-node-graph canvas is the next milestone (see DESIGN.md §15).
+Tauri 2 desktop UI for soundworm. Loopback-style node-graph canvas over
+`swd`: nodes laid out by media-class, edges drawn from the live link
+set, drag-to-link/reconnect/unlink editing. See DESIGN.md §15.
 
 ## Status
 
-Scaffold only. Connects to `swd` via `soundworm-ipc`, lists nodes/links
-on startup, subscribes to backend events and logs them. Not in the
-default workspace build; build explicitly.
+Node-graph canvas working (ui-v0.2). Connects to `swd` via
+`soundworm-ipc`, renders nodes and edges, drives `Link`/`Unlink` from
+the canvas, and updates live from backend events. Sidebar lists raw
+links and a recent-event stream. Not in the default workspace build;
+build explicitly. Next: snapshot management and metrics overlay.
 
 ## Build deps (Fedora)
 
@@ -51,9 +53,9 @@ Or, after `npm run build`, build the binary directly:
   `BackendEvent` to the webview via `app.emit("swd-event", ...)`.
 - Frontend is Vite + Svelte 5 + [Svelte Flow](https://svelteflow.dev)
   (`@xyflow/svelte`). Canvas renders nodes positioned by media-class
-  (sources left, filters middle, sinks right). Edges between nodes are
-  deferred until the IPC wire exposes port→node mapping; see
-  DESIGN.md §15.
+  (sources left, filters middle, sinks right). Edges come from the link
+  set collapsed to one visual edge per node pair, using the port→node
+  mapping now embedded in the `ListNodes` payload.
 
 ## Why a separate crate, not a feature flag on `daemon`?
 
