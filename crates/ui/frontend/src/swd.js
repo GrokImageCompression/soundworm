@@ -25,6 +25,9 @@ export const listSnapshots   = () => invoke("list_snapshots");
 export const saveSnapshot    = (name) => invoke("save_snapshot", { name });
 export const restoreSnapshot = (name) => invoke("restore_snapshot", { name });
 
+// Per-node latency percentiles + xrun counts. Polled for the overlay.
+export const getMetrics = () => invoke("get_metrics");
+
 export function onSwdEvent(handler) {
   return listen("swd-event", (msg) => handler(msg.payload));
 }

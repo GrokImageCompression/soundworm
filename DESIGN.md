@@ -424,8 +424,13 @@ model (background service + thin UI).
   the link-id round-trip (`do_link` returned a placeholder 0,
   `destroy_link` keyed off the wrong id) meant `sw unlink` and UI edge
   deletes silently no-oped. Both fixed.
-- **ui-v0.4** — metrics overlay: xrun badges on nodes, latency sparklines
-  on links, drawn from `GetMetrics` + `XrunObserved` events.
+- **ui-v0.4 (done)** — metrics overlay via a custom Svelte Flow node:
+  xrun badge + p95 latency + rolling sparkline per node, polled from
+  `GetMetrics` every 1s and refreshed on `XrunObserved`. Latency is
+  per-node (not per-link, that's where the data lives), so it renders on
+  nodes. Empty on idle ALSA graphs — those nodes don't advertise
+  `node.latency` (observability catches JACK clients, misses ALSA/
+  PW-native); populates for nodes that report it and on real xruns.
 - **ui-v0.5** — rules/script editor pane with `LoadRules`/`LoadScript`.
   Monaco or CodeMirror in the webview.
 

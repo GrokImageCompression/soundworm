@@ -7,9 +7,13 @@
   import {
     listNodes, listLinks, socketPath, onSwdEvent,
     createLink, deleteLink, loadLayout, saveLayout,
-    listSnapshots, saveSnapshot, restoreSnapshot,
+    listSnapshots, saveSnapshot, restoreSnapshot, getMetrics,
   } from "./swd.js";
   import { layoutNodes } from "./layout.js";
+  import MetricsNode from "./MetricsNode.svelte";
+
+  const nodeTypes = { metrics: MetricsNode };
+  const SPARK_LEN = 30; // rolling p95 samples kept per node
 
   let socket = $state("");
   let status = $state("connecting…");
@@ -20,6 +24,10 @@
   let savedLayout = $state({}); // node name → {x, y}, persisted to disk
   let snapshots = $state([]);   // saved snapshot names
   let snapName  = $state("");   // save-snapshot input
+  // node id → { latencyMs, xruns }, refreshed from GetMetrics. Plain
+  // (not $state): read imperatively, changes land via the nodes reassign.
+  let metricsById = {};
+  let sparksById = {};          // node id → [p95 ms, ...] rolling buffer
 
   function nodeKind(media_class) {
     if (!media_class) return "unknown";
@@ -53,35 +61,27 @@
     return true;
   }
 
-  function styleFor(kind) {
-    const base = {
-      padding: "8px 12px",
-      "border-radius": "6px",
-      "font-size": "12px",
-      "font-family": "ui-monospace, Menlo, monospace",
-      border: "1px solid #2f343b",
-    };
-    if (kind === "source") return { ...base, background: "#1f3a2d", color: "#a6f0c4" };
-    if (kind === "sink")   return { ...base, background: "#3a1f2d", color: "#f0a6c4" };
-    return { ...base, background: "#23272d", color: "#d6dae0" };
-  }
-
   function toFlowNode(nv) {
     // NodeView on the wire is `{ node: Node, ports: [Port] }`.
     const n = nv.node;
     const kind = nodeKind(n.media_class);
+    const m = metricsById[String(n.id)];
     return {
       id: String(n.id),
-      data: { label: n.name },
-      type: "default",
+      // Custom node renders label + metrics overlay and styles itself.
+      type: "metrics",
       position: { x: 0, y: 0 }, // assigned by layoutNodes()
       // Source handle on the right, target on the left, so drags read
       // left-to-right and match the 3-column layout.
       sourcePosition: Position.Right,
       targetPosition: Position.Left,
-      style: Object.entries(styleFor(kind))
-        .map(([k, v]) => `${k}:${v}`)
-        .join(";"),
+      data: {
+        label: n.name,
+        kind,
+        xruns: m?.xruns ?? 0,
+        latencyMs: m?.latencyMs ?? null,
+        spark: sparksById[String(n.id)] ?? [],
+      },
       // Stash the node name so onconnect can pass it back to the daemon
       // without a second lookup.
       sw: { kind, media_class: n.media_class, name: n.name, raw: n },
@@ -148,6 +148,40 @@
   function pushEvent(ev) {
     const ts = new Date().toLocaleTimeString();
     events = [{ ts, ...ev }, ...events].slice(0, 200);
+  }
+
+  // Poll per-node latency + xrun counts and fold them into node data so
+  // the overlay (badge, p95, sparkline) updates without relaying out.
+  async function refreshMetrics() {
+    let m;
+    try {
+      m = await getMetrics();
+    } catch (e) {
+      return; // metrics are best-effort; don't disturb status
+    }
+    const next = {};
+    for (const nl of m.nodes ?? []) {
+      const k = portKey(nl.node_id);
+      next[k] = { latencyMs: nl.p95_ms, xruns: 0 };
+      const buf = sparksById[k] ?? [];
+      buf.push(nl.p95_ms);
+      if (buf.length > SPARK_LEN) buf.shift();
+      sparksById[k] = buf;
+    }
+    for (const [nid, cnt] of m.xrun_by_node ?? []) {
+      const k = portKey(nid);
+      next[k] = { latencyMs: next[k]?.latencyMs ?? null, xruns: cnt };
+    }
+    metricsById = next;
+    nodes = nodes.map((n) => ({
+      ...n,
+      data: {
+        ...n.data,
+        xruns: metricsById[n.id]?.xruns ?? 0,
+        latencyMs: metricsById[n.id]?.latencyMs ?? null,
+        spark: sparksById[n.id] ?? [],
+      },
+    }));
   }
 
   // Persist current node positions on drag-stop. Merge into savedLayout
@@ -298,7 +332,8 @@
     savedLayout = await loadLayout();
     await refresh();
     await refreshSnapshots();
-    await onSwdEvent((ev) => {
+    await refreshMetrics();
+    const unlisten = await onSwdEvent((ev) => {
       pushEvent(ev);
       const k = ev.kind;
       if (k === "NodeAppeared" || k === "NodeRemoved" ||
@@ -307,8 +342,12 @@
         // DESIGN.md §15 — richer IPC event coverage). Refreshing on
         // node/link deltas pulls fresh ports too.
         refresh();
+      } else if (k === "XrunObserved") {
+        refreshMetrics(); // reflect the new xrun immediately
       }
     });
+    const metricsTimer = setInterval(refreshMetrics, 1000);
+    return () => { clearInterval(metricsTimer); unlisten?.(); };
   });
 </script>
 
@@ -325,6 +364,7 @@
       <SvelteFlow
         bind:nodes
         bind:edges
+        {nodeTypes}
         fitView
         onconnect={onConnect}
         ondelete={onDelete}

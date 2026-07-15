@@ -129,6 +129,18 @@ async fn delete_link(
 }
 
 #[tauri::command]
+async fn get_metrics(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    let mut guard = state.client.lock().await;
+    let client = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+    match client.request(Op::GetMetrics).await.map_err(|e| e.to_string())? {
+        ResponseData::Metrics { metrics } => {
+            serde_json::to_value(metrics).map_err(|e| e.to_string())
+        }
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
 async fn list_snapshots() -> Result<Vec<String>, String> {
     let dir = data_dir().join("snapshots");
     let mut entries = match std::fs::read_dir(&dir) {
@@ -239,7 +251,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             list_nodes, list_ports, list_links, socket_path,
             create_link, delete_link, load_layout, save_layout,
-            list_snapshots, save_snapshot, restore_snapshot,
+            list_snapshots, save_snapshot, restore_snapshot, get_metrics,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch soundworm-ui");
