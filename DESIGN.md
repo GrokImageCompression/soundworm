@@ -431,8 +431,11 @@ model (background service + thin UI).
   nodes. Empty on idle ALSA graphs — those nodes don't advertise
   `node.latency` (observability catches JACK clients, misses ALSA/
   PW-native); populates for nodes that report it and on real xruns.
-- **ui-v0.5** — rules/script editor pane with `LoadRules`/`LoadScript`.
-  Monaco or CodeMirror in the webview.
+- **ui-v0.5 (done)** — rules/script editor overlay (CodeMirror 6, TOML +
+  Rust modes, one-dark). Reads/writes the config files directly, then
+  `LoadRules`/`LoadScript` applies the path and reports the rule count or
+  a parse error inline. Daemon keeps the previous rules/script when the
+  new one is malformed.
 
 **Out of scope (parity gaps vs Loopback we will not chase):**
 - Virtual audio devices (needs HAL plugin on macOS / kernel driver on

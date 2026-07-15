@@ -28,6 +28,14 @@ export const restoreSnapshot = (name) => invoke("restore_snapshot", { name });
 // Per-node latency percentiles + xrun counts. Polled for the overlay.
 export const getMetrics = () => invoke("get_metrics");
 
+// Rules (TOML) / script (rhai) editor. read/write hit the config files
+// directly; apply asks the daemon to load that path and reports the
+// result (rule count, or a parse error).
+export const readConfig  = (kind) => invoke("read_config", { kind });
+export const writeConfig = (kind, content) => invoke("write_config", { kind, content });
+export const applyRules  = () => invoke("apply_rules");
+export const applyScript = () => invoke("apply_script");
+
 export function onSwdEvent(handler) {
   return listen("swd-event", (msg) => handler(msg.payload));
 }

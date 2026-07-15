@@ -79,6 +79,65 @@ fn layout_path() -> std::path::PathBuf {
     data_dir().join("ui-layout.json")
 }
 
+// Config lives under XDG_CONFIG_HOME (not DATA); mirrors the daemon's
+// config_dir. The editor reads/writes these files directly, then asks
+// the daemon to load the path.
+fn config_path(kind: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            std::path::PathBuf::from(home).join(".config")
+        })
+        .join("soundworm");
+    match kind {
+        "rules" => Some(base.join("rules/default.toml")),
+        "script" => Some(base.join("routing.rhai")),
+        _ => None,
+    }
+}
+
+#[tauri::command]
+async fn read_config(kind: String) -> Result<String, String> {
+    let path = config_path(&kind).ok_or("unknown config kind")?;
+    match std::fs::read_to_string(&path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn write_config(kind: String, content: String) -> Result<(), String> {
+    let path = config_path(&kind).ok_or("unknown config kind")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn apply_rules(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    let path = config_path("rules").unwrap().to_string_lossy().into_owned();
+    let mut guard = state.client.lock().await;
+    let client = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+    match client.request(Op::LoadRules { path }).await.map_err(|e| e.to_string())? {
+        ResponseData::Rules { rule_count } => Ok(rule_count),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
+#[tauri::command]
+async fn apply_script(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    let path = config_path("script").unwrap().to_string_lossy().into_owned();
+    let mut guard = state.client.lock().await;
+    let client = guard.as_mut().ok_or_else(|| "not connected".to_string())?;
+    match client.request(Op::LoadScript { path }).await.map_err(|e| e.to_string())? {
+        ResponseData::Script { path } => Ok(path),
+        other => Err(format!("unexpected response: {other:?}")),
+    }
+}
+
 #[tauri::command]
 async fn load_layout() -> Result<serde_json::Value, String> {
     match std::fs::read_to_string(layout_path()) {
@@ -252,6 +311,7 @@ fn main() {
             list_nodes, list_ports, list_links, socket_path,
             create_link, delete_link, load_layout, save_layout,
             list_snapshots, save_snapshot, restore_snapshot, get_metrics,
+            read_config, write_config, apply_rules, apply_script,
         ])
         .run(tauri::generate_context!())
         .expect("failed to launch soundworm-ui");

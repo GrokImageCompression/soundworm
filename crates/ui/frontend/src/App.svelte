@@ -11,6 +11,7 @@
   } from "./swd.js";
   import { layoutNodes } from "./layout.js";
   import MetricsNode from "./MetricsNode.svelte";
+  import EditorPane from "./EditorPane.svelte";
 
   const nodeTypes = { metrics: MetricsNode };
   const SPARK_LEN = 30; // rolling p95 samples kept per node
@@ -24,6 +25,7 @@
   let savedLayout = $state({}); // node name → {x, y}, persisted to disk
   let snapshots = $state([]);   // saved snapshot names
   let snapName  = $state("");   // save-snapshot input
+  let editorOpen = $state(false); // rules/script editor overlay
   // node id → { latencyMs, xruns }, refreshed from GetMetrics. Plain
   // (not $state): read imperatively, changes land via the nodes reassign.
   let metricsById = {};
@@ -356,6 +358,7 @@
     <h1>soundworm</h1>
     <span class="status">{status}</span>
     <span class="hint">drag handle→handle to link · drag edge endpoint to reconnect · right-click edge (or select + Delete) to unlink</span>
+    <button class="edit-btn" onclick={() => (editorOpen = true)}>✎ edit config</button>
     <span class="socket">{socket}</span>
   </header>
 
@@ -434,6 +437,12 @@
       </section>
     </aside>
   </div>
+
+  {#if editorOpen}
+    <div class="overlay">
+      <EditorPane onclose={() => (editorOpen = false)} />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -460,7 +469,19 @@
   header h1 { margin: 0; font-size: 15px; color: var(--accent); letter-spacing: .5px; }
   .status { font-size: 12px; }
   .hint   { font-size: 11px; color: var(--muted); }
-  .socket { font-size: 11px; color: var(--muted); margin-left: auto; }
+  .edit-btn {
+    margin-left: auto;
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 4px 10px; font-size: 12px; cursor: pointer;
+  }
+  .edit-btn:hover { border-color: var(--accent); }
+  .socket { font-size: 11px; color: var(--muted); margin-left: 12px; }
+  .overlay {
+    position: fixed; inset: 0; z-index: 20;
+    background: rgba(0,0,0,0.55);
+    display: flex; align-items: center; justify-content: center;
+  }
   .body { flex: 1; display: grid; grid-template-columns: 1fr 320px; min-height: 0; }
   .canvas { background: var(--bg); }
   .sidebar { background: var(--panel); border-left: 1px solid var(--border); overflow-y: auto; }
