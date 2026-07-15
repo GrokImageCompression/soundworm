@@ -281,28 +281,40 @@ Exit: induced xrun (e.g. CPU spike) shows up in `sw metrics` within
 
 Goal: feature parity on macOS for enumerate/link/unlink.
 
-- Replace stub with real `AudioBackend` impl using `coreaudio-rs`
-- Map CoreAudio device/stream/format model onto `Node`/`Port`
-- HAL property listeners → `BackendEvent`s
-- CI: macOS runner builds and runs mock-backend tests; integration
-  tests gated on `cfg(target_os = "macos")`
-- Document semantic gaps vs PipeWire (e.g. no arbitrary port-to-port
-  linking; route to default device instead)
+Enumeration + routing landed (compile-verified on macOS CI; runtime
+still needs a real Mac):
 
-Exit: `sw list` and `sw link` work on a macOS dev box; rules engine
-unchanged.
+- Real `AudioBackend` impl via `coreaudio-sys` HAL calls in
+  `crates/coreaudio-backend/src/macos.rs`. `enumerate_nodes` walks
+  `kAudioHardwarePropertyDevices`, classifies Sink/Source by output vs
+  input stream count, reads name + nominal sample rate.
+- "Link" = set system default output device
+  (`kAudioHardwarePropertyDefaultOutputDevice`), since the HAL has no
+  port-to-port linking. `destroy_link` is a no-op.
+- Element constant hardcoded to 0 to dodge the Master→Main rename across
+  SDK versions.
+
+Still open: live HAL property listeners → `BackendEvent`s (CFRunLoop
+thread), per-stream volume, channel counts, and on-hardware runtime
+verification.
 
 ### v0.6 — WASAPI backend
 
 Goal: same on Windows.
 
-- `windows-rs` bindings for `IMMDeviceEnumerator`,
-  `IAudioSessionManager2`
-- `IMMNotificationClient` → device-change events
-- Session-level routing via `IAudioSessionControl` where possible
-- CI: Windows runner
+Enumeration landed (compile-verified on Windows CI; runtime needs a real
+PC):
 
-Exit: same as v0.5 but on Windows 11.
+- `windows` 0.62 MMDevice API in `crates/wasapi-backend/src/win.rs`:
+  `IMMDeviceEnumerator::EnumAudioEndpoints` over render (Sink) and
+  capture (Source) endpoints. `NodeId` is a stable hash of the string
+  endpoint id; raw id is the node name for now.
+- Routing is a documented gap: Windows has no public API to set the
+  default endpoint (needs the undocumented IPolicyConfig), so
+  `create_link` errors rather than pretending.
+
+Still open: friendly names via `IPropertyStore`,
+`IMMNotificationClient` → device-change events, on-hardware runtime.
 
 ### v0.7 — Hardening
 

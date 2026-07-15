@@ -1,37 +1,13 @@
-//! macOS HAL bindings via `coreaudio-sys`.
+//! macOS HAL bindings via `coreaudio-sys`. Only compiled on macOS.
 //!
-//! This module is the only part of the crate compiled on macOS targets.
-//! The actual HAL calls are deliberately left as `TODO(v0.5-mac)`
-//! stubs returning `Ok(empty)` / no-op — they need to be filled in on a
-//! macOS dev box where the resulting code can actually be exercised.
+//! Working: `enumerate_nodes` (device list → Sink/Source Nodes with name
+//! + sample rate) and `set_default_output` (the "link" semantic, since
+//! the HAL has no port-to-port linking). Compile-verified on macOS CI;
+//! on-hardware runtime still needs a real Mac.
 //!
-//! The structural pieces are real and ready:
-//!   * `Inner::start()` brings up the HAL listener thread + event
-//!     broadcaster, mirroring the `pipewire-backend` shape.
-//!   * `device_id_to_node_id` / `node_id_to_device_id` settle the
-//!     `AudioDeviceID` (u32) ↔ `NodeId` (u64) mapping.
-//!   * `hal_devices()` is where `kAudioHardwarePropertyDevices` will be
-//!     called once the bindings are wired.
-//!
-//! When this is filled in, the call graph should be:
-//!
-//!   start()
-//!     ↳ spawn listener thread
-//!         ↳ AudioObjectAddPropertyListener(devices)
-//!         ↳ AudioObjectAddPropertyListener(default output)
-//!         ↳ CFRunLoopRun()
-//!     ↳ initial enumerate via hal_devices()
-//!
-//!   set_default_output(node_id)
-//!     ↳ AudioObjectSetPropertyData(
-//!           kAudioObjectSystemObject,
-//!           kAudioHardwarePropertyDefaultOutputDevice,
-//!           &device_id)
-//!
-//!   set_volume(node_id, v)
-//!     ↳ AudioObjectSetPropertyData(
-//!           device_id,
-//!           kAudioDevicePropertyVolumeScalar)
+//! Not yet done: a HAL property-listener thread (CFRunLoop +
+//! AudioObjectAddPropertyListener) to emit live NodeAppeared/NodeRemoved,
+//! and per-stream volume via `kAudioDevicePropertyVolumeScalar`.
 
 use coreaudio_sys::{
     kAudioDevicePropertyDeviceName, kAudioDevicePropertyNominalSampleRate,
