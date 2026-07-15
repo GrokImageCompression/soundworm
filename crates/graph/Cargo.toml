@@ -1,7 +1,11 @@
 [package]
 name    = "soundworm-graph"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "In-memory audio graph model for soundworm, updated from backend events."
 
 [dependencies]
 soundworm-core = { path = "../core" }

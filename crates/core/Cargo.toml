@@ -1,7 +1,13 @@
 [package]
 name    = "soundworm-core"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Core types for soundworm: nodes, ports, links, the AudioBackend trait, and the error model."
+keywords = ["audio", "routing", "pipewire"]
+categories = ["multimedia::audio"]
 
 [dependencies]
 serde       = { workspace = true }
