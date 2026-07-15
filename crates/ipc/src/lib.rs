@@ -168,6 +168,11 @@ pub enum ErrorCode {
     RulesError,
     UnsupportedProto,
     Internal,
+    /// A code this client predates. `#[serde(other)]` catches any codes a
+    /// newer daemon introduces so the response still deserializes instead
+    /// of failing the whole frame.
+    #[serde(other)]
+    Unknown,
 }
 
 impl std::fmt::Display for ErrorCode {
@@ -441,5 +446,17 @@ mod tests {
             let json = serde_json::to_string(ev).unwrap();
             assert!(json.contains("\"kind\""), "event missing kind tag: {json}");
         }
+    }
+
+    #[test]
+    fn error_code_unknown_is_forward_compatible() {
+        // Known codes round-trip as their string name.
+        let j = serde_json::to_string(&ErrorCode::NotFound).unwrap();
+        assert_eq!(j, "\"NotFound\"");
+        assert_eq!(serde_json::from_str::<ErrorCode>(&j).unwrap(), ErrorCode::NotFound);
+        // A code a newer daemon adds degrades to Unknown instead of failing.
+        let future: ErrorCode =
+            serde_json::from_str("\"SomeFutureCode\"").expect("unknown code must parse");
+        assert_eq!(future, ErrorCode::Unknown);
     }
 }
