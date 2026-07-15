@@ -1,118 +1,148 @@
-# soundworm — Daemon IPC Protocol (v0.2 draft)
+# soundworm IPC protocol
 
-Status: draft, pre-implementation. Owner: v0.2 milestone.
+Wire protocol between `sw` (CLI) / UI clients and `swd` (daemon).
 
-## 1. Goals
+Status: implemented, `proto = 2`. Pre-1.0, so a minor release may still
+bump `proto`; the conformance tests in `crates/ipc/src/lib.rs` pin every
+frame shape described here.
 
-- Let `sw` (CLI) and future tools talk to `swd` (daemon) without sharing
-  process state.
-- Stream live `BackendEvent`s to subscribers (TUI, dashboards, tests).
-- Stay simple enough to implement in a weekend; no protobuf, no gRPC.
+## 1. Transport
 
-## 2. Non-Goals (v0.2)
+- Socket: `$SOUNDWORM_SOCK` if set, else
+  `$XDG_RUNTIME_DIR/soundworm/swd.sock`, else `/tmp/soundworm/swd.sock`.
+- Unix domain, `SOCK_STREAM`, daemon-owned, filesystem permissions are
+  the only access control (localhost, single user).
+- Framing: newline-delimited JSON. One UTF-8 message per `\n`-terminated
+  line, max 1 MiB per line (`codec::MAX_LINE_BYTES`); a longer line is a
+  `LineTooLong` error and the connection closes.
+- Concurrency: many independent connections. Within one connection
+  requests are answered in order; there is no multiplexing.
 
-- Remote/network access — Unix socket only.
-- Multi-user auth — rely on filesystem permissions.
-- Backwards compatibility — pre-1.0, breaking changes allowed per minor.
+## 2. Message envelope
 
-## 3. Transport
-
-- **Socket path:** `$XDG_RUNTIME_DIR/soundworm/swd.sock`
-  (fallback `/run/user/$UID/soundworm/swd.sock`).
-- **Socket type:** `SOCK_STREAM` (Unix domain).
-- **Permissions:** `0600`, owned by the daemon user.
-- **Framing:** newline-delimited JSON (NDJSON). One message per line, UTF-8,
-  `\n` terminator. Max line length 1 MiB (reject + close on overflow).
-- **Concurrency:** daemon accepts many clients; each connection is
-  independent. No request multiplexing within a single connection — requests
-  are processed in order.
-
-Rationale: NDJSON keeps `socat`/`nc` debugging trivial and matches the
-event-stream shape. Length-prefixed framing buys nothing here.
-
-## 4. Message Shape
-
-Every message is a JSON object with a `type` discriminator and a numeric
-`id` for request/response correlation.
+Every frame is a JSON object tagged by `type`: `Request`, `Response`, or
+`Event`.
 
     { "type": "Request",  "id": 7, "op": "ListNodes" }
-    { "type": "Response", "id": 7, "ok": true, "data": { ... } }
+    { "type": "Response", "id": 7, "ok": true, "data": { "resp": "Nodes", "nodes": [ ... ] } }
     { "type": "Event",    "kind": "NodeAppeared", "node": { ... } }
 
-- `id` is client-assigned, unique per connection, monotonic recommended.
-- `Event` messages have no `id` (server-pushed).
-- Errors: `{ "type": "Response", "id": N, "ok": false, "error": { "code": "...", "message": "..." } }`.
+- `id` is client-assigned, unique per connection, and echoed on the
+  matching `Response`. `Event` frames are server-pushed and carry no `id`.
+- A `Request` carries the op tag `op` plus that op's fields (flattened).
+- A `Response` carries `ok` plus exactly one of `data` (on success) or
+  `error` (on failure). `data` is an object tagged by `resp`.
+- An `Event` carries the event tag `kind` plus that event's fields.
 
-## 5. Operations (v0.2)
+## 3. Operations
 
-| op              | request fields            | response data                |
-|-----------------|---------------------------|------------------------------|
-| `Hello`         | `{ client, version }`     | `{ daemon_version, proto: 1 }` |
-| `ListNodes`     | —                         | `{ nodes: [Node, ...] }`     |
-| `ListPorts`     | —                         | `{ ports: [Port, ...] }`     |
-| `ListLinks`     | —                         | `{ links: [Link, ...] }`     |
-| `Link`          | `{ source, sink }`        | `{ link_id }`                |
-| `Unlink`        | `{ link_id }`             | `{}`                         |
-| `Subscribe`     | `{ filter?: EventFilter }`| `{}` then stream of `Event`  |
-| `Unsubscribe`   | —                         | `{}`                         |
-| `LoadRules`     | `{ path }`                | `{ rule_count }`             |
-| `ReloadRules`   | —                         | `{ rule_count }`             |
-| `LoadScript`    | `{ path }`                | `{ path }`                   |
-| `ReloadScript`  | —                         | `{ path }`                   |
-| `GetMetrics`    | —                         | `{ metrics: MetricsPayload }`|
-| `Snapshot`      | `{ name }`                | `{ path }`                   |
-| `Restore`       | `{ name }`                | `{ applied, skipped }`       |
-| `Shutdown`      | —                         | `{}` then close              |
+Client sends `{ "type": "Request", "id": N, "op": "<Op>", ...fields }`.
+Response `data` is the object in the last column.
 
-Node/Link payloads serialize from the existing `soundworm-core` types
-(already `Serialize`/`Deserialize`).
+| op            | request fields              | success `data` (`resp`, fields)     |
+|---------------|-----------------------------|-------------------------------------|
+| `Hello`       | `client`, `version`         | `Hello`  `daemon_version`, `proto`  |
+| `ListNodes`   | .                           | `Nodes`  `nodes: [NodeView]`        |
+| `ListPorts`   | .                           | `Ports`  `ports: [Port]`            |
+| `ListLinks`   | .                           | `Links`  `links: [Link]`            |
+| `Link`        | `source: PortRef`, `sink: PortRef` | `Link`  `link_id`            |
+| `Unlink`      | `link_id`                   | `Empty`                             |
+| `Subscribe`   | `filter?: EventFilter`      | `Empty`, then an `Event` stream     |
+| `Unsubscribe` | .                           | `Empty`                             |
+| `LoadRules`   | `path`                      | `Rules`  `rule_count`               |
+| `ReloadRules` | .                           | `Rules`  `rule_count`               |
+| `LoadScript`  | `path`                      | `Script`  `path`                    |
+| `ReloadScript`| .                           | `Script`  `path`                    |
+| `GetMetrics`  | .                           | `Metrics`  `metrics: MetricsPayload`|
+| `Snapshot`    | `name`                      | `Snapshot`  `path`                  |
+| `Restore`     | `name`                      | `Restore`  `applied`, `skipped`     |
+| `Shutdown`    | .                           | `Empty`, then the daemon exits      |
 
-`source`/`sink` in `Link` accept either a `PortId` or a
-`{ node, port_name }` tuple — the daemon resolves the latter via
-`AudioGraph::ports_of`.
+`resp` is tagged (not inferred from shape) precisely because several
+payloads share a shape: `Script` and `Snapshot` are both `{ path }`,
+`Rules` and `Restore` are both numeric. An untagged enum silently
+mis-parsed those; the tag makes each unambiguous.
 
-## 6. Event Stream
+## 4. Events
 
 After a successful `Subscribe`, the daemon pushes one `Event` per
-`BackendEvent` plus synthetic `RulesApplied`/`LinkRejected` events from the
-policy layer. Backpressure: bounded per-connection queue (suggest 1024); if
-full, drop oldest non-critical events and emit `EventsDropped { count }`.
+relevant change. `filter.kinds` (array of kind strings) narrows the
+stream; omit it for all events.
 
-## 7. Error Codes
+| kind            | fields                    |
+|-----------------|---------------------------|
+| `NodeAppeared`  | `node: Node`              |
+| `NodeRemoved`   | `node_id`                 |
+| `LinkAppeared`  | `link: Link`              |
+| `LinkRemoved`   | `link_id`                 |
+| `RulesApplied`  | `rule`, `link_id`         |
+| `LinkRejected`  | `reason`                  |
+| `EventsDropped` | `count`                   |
+| `XrunObserved`  | `node_id`, `gap_ms`       |
 
-`UnknownOp`, `BadRequest`, `NotFound`, `Conflict`, `BackendError`,
-`RulesError`, `Internal`. Strings, not numbers — easier to grep.
+Backpressure: the per-connection queue is bounded. On overflow the
+daemon drops events and emits `EventsDropped { count }` so a client knows
+its view may be stale and can re-fetch via `ListNodes` / `ListLinks`.
 
-## 8. Versioning
+## 5. Handshake and versioning
 
-- Wire protocol carries a single integer `proto` (currently `1`).
-- `Hello` is mandatory first message; daemon closes the connection on
-  mismatch with `error.code = "UnsupportedProto"`.
+- `Hello` must be the first op on a connection. Any other first op gets
+  `error.code = "BadRequest"` ("Hello required first").
+- The daemon replies `Hello { daemon_version, proto }`.
+- The client compares `proto` to its own and disconnects on mismatch.
+  The `Hello` request does not carry the client's proto, so the daemon
+  does not enforce the version; detection is client-side.
 
-## 9. Resolved Design Decisions
+## 6. Error model
 
-- **No `Watch` op.** `ListNodes` + `Subscribe` already gives a client the
-  current snapshot plus the live delta stream. A single-shot diff op would
-  duplicate that path and force the daemon to track per-client cursors.
-  Revisit only if a real consumer needs it.
-- **Snapshot/Restore stay daemon-side at the IPC boundary; logic stays in
-  `soundworm-snapshots`.** The daemon is the only process with the live
-  `AudioGraph` and backend handle, so it must mediate. The policy crate is
-  about rules evaluation, not persistence — keeping them separate avoids
-  pulling filesystem concerns into rule eval.
-- **No capability flags in `Hello` for v0.2.** `proto: 1` is the only
-  negotiation knob. Add a `caps` array in v0.3 when Rhai scripting lands
-  and clients actually need to feature-detect.
+Failure response: `{ "type": "Response", "id": N, "ok": false,
+"error": { "code": "<ErrorCode>", "message": "..." } }`.
 
-## 10. Implementation Order
+Codes are strings (grep-friendly): `UnknownOp`, `BadRequest`,
+`NotFound`, `Conflict`, `BackendError`, `RulesError`, `UnsupportedProto`,
+`Internal`. A newer daemon may add codes; clients decode an unrecognized
+one to `Unknown` rather than failing the frame (`#[serde(other)]`).
 
-1. Socket bind + accept loop in `swd` (tokio `UnixListener`).
-2. NDJSON codec (`tokio_util::codec::LinesCodec`).
-3. `Request`/`Response` types in a new `soundworm-ipc` crate (shared by
-   `sw` and `swd`).
-4. Wire `ListNodes`/`ListLinks`/`Link`/`Unlink` against existing
-   `AudioGraph` + backend.
-5. `Subscribe` — forward `BackendEvent` mpsc into per-client channel.
-6. Migrate `sw` subcommands to talk to the socket; keep `--in-process`
-   flag as an escape hatch for tests.
-7. `LoadRules`/`ReloadRules` last — depends on TOML rules engine work.
+## 7. Payload types
+
+Serialized from `soundworm-core`. Id newtypes (`NodeId`, `PortId`,
+`LinkId`) are bare JSON numbers (u64).
+
+    Node   { id, name, kind, app_name, media_class,
+             sample_rate, channels, latency_ms, properties }
+    Port   { id, node_id, name, direction, channels }
+    Link   { id, source_port, sink_port, latency_compensation_ms }
+
+- `kind`: `"Source" | "Sink" | "Filter" | "Virtual"`.
+- `direction`: `"Input" | "Output"`.
+- `app_name`: string or `null`. `properties`: string to string map.
+
+`NodeView` (the `ListNodes` element) inlines each node's ports so the UI
+draws the graph in one round-trip:
+
+    NodeView { node: Node, ports: [Port] }
+
+`ports` defaults to `[]` when absent.
+
+`PortRef` (a `Link` endpoint) is either a bare `PortId` number or a name
+pair `{ node, port }` that the daemon resolves against the live graph:
+
+    "source": 64
+    "source": { "node": "Firefox", "port": "output_FL" }
+
+`MetricsPayload` (from `GetMetrics`):
+
+    MetricsPayload {
+      nodes: [ { node_id, count, min_ms, p50_ms, p95_ms, p99_ms, max_ms } ],
+      xrun_total,
+      xrun_by_node: [ [node_id, count], ... ]
+    }
+
+## 8. Design decisions
+
+- No `Watch` op: `ListNodes`/`ListLinks` for the snapshot plus
+  `Subscribe` for the delta stream cover it without per-client cursors.
+- Snapshot/Restore are mediated by the daemon (it owns the live graph and
+  backend), but the persistence logic stays in `soundworm-snapshots`.
+- `proto` is the only negotiation knob; no capability flags yet. Add a
+  `caps` array when a client actually needs to feature-detect.
