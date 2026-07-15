@@ -18,7 +18,9 @@ pub async fn run(in_process: bool) -> Result<()> {
             // Daemon now returns NodeView (Node + embedded ports); the
             // CLI table only renders the Node fields, so project away
             // the ports here.
-            ResponseData::Nodes { nodes } => nodes.into_iter().map(|nv| nv.node).collect(),
+            // Annotate the container: on non-linux the in-process arm is
+            // cfg'd out, so this collect is the only thing typing `nodes`.
+            ResponseData::Nodes { nodes } => nodes.into_iter().map(|nv| nv.node).collect::<Vec<_>>(),
             _ => return Err(anyhow!("unexpected response from daemon")),
         }
     };
