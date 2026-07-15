@@ -271,6 +271,8 @@ fn event_kind(ev: &Event) -> &'static str {
         Event::LinkRejected { .. }  => "LinkRejected",
         Event::EventsDropped { .. } => "EventsDropped",
         Event::XrunObserved { .. }  => "XrunObserved",
+        // Event is #[non_exhaustive]; a newer daemon may add kinds.
+        _ => "Unknown",
     }
 }
 
