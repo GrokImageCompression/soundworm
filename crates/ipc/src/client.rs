@@ -4,13 +4,48 @@
 use crate::{codec, Event, Message, Op, PROTO_VERSION, Request, Response, ResponseData};
 use anyhow::{anyhow, bail, Result};
 use std::path::Path;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
+// Transport halves boxed so the client works over a Unix socket or a
+// Windows named pipe without threading the concrete type everywhere.
+type BoxRead = Box<dyn AsyncRead + Unpin + Send>;
+type BoxWrite = Box<dyn tokio::io::AsyncWrite + Unpin + Send>;
+
+// Connect to the daemon endpoint: a Unix socket path or a Windows named
+// pipe name (see `default_socket_path`).
+async fn connect_transport(path: &Path) -> Result<(BoxRead, BoxWrite)> {
+    #[cfg(unix)]
+    {
+        let stream = tokio::net::UnixStream::connect(path)
+            .await
+            .map_err(|e| anyhow!("connect {}: {e}", path.display()))?;
+        let (reader, writer) = stream.into_split();
+        Ok((Box::new(reader), Box::new(writer)))
+    }
+    #[cfg(windows)]
+    {
+        use tokio::net::windows::named_pipe::ClientOptions;
+        // ERROR_PIPE_BUSY: all instances busy; retry briefly like the
+        // Win32 CallNamedPipe pattern.
+        const ERROR_PIPE_BUSY: i32 = 231;
+        let name = path.as_os_str();
+        let client = loop {
+            match ClientOptions::new().open(name) {
+                Ok(c) => break c,
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(anyhow!("open pipe {}: {e}", path.display())),
+            }
+        };
+        let (reader, writer) = tokio::io::split(client);
+        Ok((Box::new(reader), Box::new(writer)))
+    }
+}
+
 pub struct Client {
-    writer: OwnedWriteHalf,
+    writer: BoxWrite,
     next_id: u64,
     inbox: mpsc::Receiver<Inbound>,
 }
@@ -21,10 +56,7 @@ enum Inbound {
 
 impl Client {
     pub async fn connect(path: &Path) -> Result<Self> {
-        let stream = UnixStream::connect(path)
-            .await
-            .map_err(|e| anyhow!("connect {}: {e}", path.display()))?;
-        let (reader, writer) = stream.into_split();
+        let (reader, writer) = connect_transport(path).await?;
         let (tx, rx) = mpsc::channel::<Inbound>(64);
         spawn_reader(reader, tx, None);
 
@@ -76,8 +108,7 @@ pub async fn connect_subscriber(
     path: &Path,
     filter: Option<crate::EventFilter>,
 ) -> Result<mpsc::Receiver<Event>> {
-    let stream = UnixStream::connect(path).await?;
-    let (reader, mut writer) = stream.into_split();
+    let (reader, mut writer) = connect_transport(path).await?;
     let (in_tx, mut in_rx) = mpsc::channel::<Inbound>(64);
     let (ev_tx, ev_rx) = mpsc::channel::<Event>(256);
     spawn_reader(reader, in_tx, Some(ev_tx));
@@ -119,7 +150,7 @@ pub async fn connect_subscriber(
 }
 
 fn spawn_reader(
-    reader: OwnedReadHalf,
+    reader: BoxRead,
     inbox: mpsc::Sender<Inbound>,
     events: Option<mpsc::Sender<Event>>,
 ) {

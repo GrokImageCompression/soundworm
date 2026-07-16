@@ -6,22 +6,30 @@
 // Client transport is unix-only (tokio's UnixStream isn't on Windows).
 // A Windows named-pipe backend will land alongside the WASAPI work in
 // v0.6; until then the IPC wire types are still usable cross-platform.
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 pub mod client;
 pub mod codec;
 
 use std::path::PathBuf;
 
-/// Default socket path used by both `swd` and `sw`. Override with
-/// `SOUNDWORM_SOCK`. Falls back to `/tmp` if `XDG_RUNTIME_DIR` is unset.
+/// Default IPC endpoint used by both `swd` and `sw`. Override with
+/// `SOUNDWORM_SOCK`. On Unix this is a socket path (falls back to `/tmp`
+/// if `XDG_RUNTIME_DIR` is unset); on Windows it is a named-pipe name.
 pub fn default_socket_path() -> PathBuf {
     if let Ok(p) = std::env::var("SOUNDWORM_SOCK") {
         return PathBuf::from(p);
     }
-    let base = std::env::var("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("/tmp"));
-    base.join("soundworm").join("swd.sock")
+    #[cfg(windows)]
+    {
+        PathBuf::from(r"\\.\pipe\soundworm")
+    }
+    #[cfg(not(windows))]
+    {
+        let base = std::env::var("XDG_RUNTIME_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from("/tmp"));
+        base.join("soundworm").join("swd.sock")
+    }
 }
 
 use serde::{Deserialize, Serialize};

@@ -18,8 +18,7 @@ use soundworm_ipc::{
 };
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 
 const OUTBOUND_CAP: usize = 1024;
@@ -29,6 +28,19 @@ pub fn socket_path() -> PathBuf {
 }
 
 pub async fn serve(path: PathBuf, state: Arc<DaemonState>) -> Result<()> {
+    #[cfg(unix)]
+    {
+        serve_unix(path, state).await
+    }
+    #[cfg(windows)]
+    {
+        serve_windows(path, state).await
+    }
+}
+
+#[cfg(unix)]
+async fn serve_unix(path: PathBuf, state: Arc<DaemonState>) -> Result<()> {
+    use tokio::net::UnixListener;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }
@@ -41,7 +53,37 @@ pub async fn serve(path: PathBuf, state: Arc<DaemonState>) -> Result<()> {
         let (stream, _) = listener.accept().await?;
         let state = Arc::clone(&state);
         tokio::spawn(async move {
-            if let Err(e) = handle_client(stream, state).await {
+            let (reader, writer) = stream.into_split();
+            if let Err(e) = handle_client(reader, writer, state).await {
+                tracing::warn!("client closed with error: {e:#}");
+            }
+        });
+    }
+}
+
+// Windows named-pipe accept loop. Each accepted instance is handed off and
+// the next instance is created immediately so a connecting client never
+// finds the pipe missing.
+#[cfg(windows)]
+async fn serve_windows(path: PathBuf, state: Arc<DaemonState>) -> Result<()> {
+    use tokio::net::windows::named_pipe::ServerOptions;
+    let name = path.as_os_str().to_owned();
+    tracing::info!("IPC listening on {:?}", path);
+
+    let mut server = ServerOptions::new()
+        .first_pipe_instance(true)
+        .create(&name)
+        .with_context(|| format!("create pipe {path:?}"))?;
+    loop {
+        server.connect().await.context("pipe connect")?;
+        let connected = server;
+        server = ServerOptions::new()
+            .create(&name)
+            .context("create next pipe instance")?;
+        let state = Arc::clone(&state);
+        tokio::spawn(async move {
+            let (reader, writer) = tokio::io::split(connected);
+            if let Err(e) = handle_client(reader, writer, state).await {
                 tracing::warn!("client closed with error: {e:#}");
             }
         });
@@ -62,8 +104,11 @@ struct ClientCtx {
     said_hello: bool,
 }
 
-async fn handle_client(stream: UnixStream, state: Arc<DaemonState>) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
+async fn handle_client<R, W>(reader: R, mut writer: W, state: Arc<DaemonState>) -> Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
+{
     let (tx, mut rx) = mpsc::channel::<Message>(OUTBOUND_CAP);
 
     // Writer task: drains outbound queue onto the socket.

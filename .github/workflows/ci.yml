@@ -137,21 +137,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      # Windows excludes the unix backends *and* the daemon/CLI: their
-      # IPC transport is unix-socket-only (named-pipe support is a v0.6
-      # track). The WASAPI backend, IPC wire types, and other portable
-      # crates build here so we catch regressions early.
-      - name: cargo build (portable crates only)
+      # Windows excludes only the unix backends. The daemon and CLI build
+      # here: the IPC transport uses a Windows named pipe (the client and
+      # server abstract over the socket vs pipe).
+      - name: cargo build
         run: |
           cargo build --workspace --all-targets `
             --exclude soundworm-pipewire `
-            --exclude soundworm-coreaudio `
-            --exclude soundworm-daemon `
-            --exclude soundworm-cli
-      - name: cargo test (portable crates only)
+            --exclude soundworm-coreaudio
+      - name: cargo test
         run: |
           cargo test --workspace `
             --exclude soundworm-pipewire `
-            --exclude soundworm-coreaudio `
-            --exclude soundworm-daemon `
-            --exclude soundworm-cli
+            --exclude soundworm-coreaudio
